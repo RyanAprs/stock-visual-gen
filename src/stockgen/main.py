@@ -14,6 +14,7 @@ from . import render as render_mod
 from . import metadata as meta_mod
 from . import assets as assets_mod
 from . import vector as vector_mod
+from . import image as image_mod
 
 console = Console()
 
@@ -277,6 +278,39 @@ def cmd_assets(args) -> int:
     return 0
 
 
+def cmd_image(args) -> int:
+    """Generate original high-res raster images (jpg/png/webp) from sketches."""
+    cfg = Config.load(args.config)
+    sketches = ALL_SKETCHES if args.sketch == "all" else [args.sketch]
+    batch = _batch_dir(cfg, args.batch)
+    img_dir = batch / "image"
+    aspect = args.aspect
+    reg = assets_mod.Registry.load(batch)
+    idx = len(reg.of_kind(assets_mod.KIND_IMAGE))
+    made = 0
+    for sketch in sketches:
+        for k in range(args.count):
+            seed = args.seed_start + k
+            idx += 1
+            console.print(f"[cyan]▶ image[/] {sketch} seed={seed} [{aspect}] .{args.format} → img_{idx:03d}")
+            try:
+                info = image_mod.render_image(cfg, sketch, seed, img_dir, idx,
+                                              fmt=args.format, aspect=aspect)
+            except Exception as e:
+                console.print(f"  [red]✗ {e}[/]"); return 3
+            reg.add(assets_mod.Asset(
+                file=f"image/{info['file']}", kind=assets_mod.KIND_IMAGE,
+                source=assets_mod.SOURCE_ORIGINAL, sketch=sketch, seed=seed,
+                width=info["width"], height=info["height"], aspect=info["aspect"],
+            ))
+            reg.save()
+            made += 1
+            console.print(f"  [green]✓[/] {info['file']} ({info['width']}x{info['height']}, {info['megapixels']}MP)")
+    console.print(f"\n[green]✓ {made} images[/] in {img_dir}")
+    console.print(f"[dim]Next: stockgen metadata --batch {batch.name} --kind image[/]")
+    return 0
+
+
 def cmd_vector(args) -> int:
     """Generate original flat-vector assets (SVG master + EPS + JPEG preview)."""
     cfg = Config.load(args.config)
@@ -351,6 +385,15 @@ def main(argv=None) -> int:
     vec.add_argument("--seed-start", type=int, default=100, dest="seed_start")
     vec.add_argument("--batch", default=None, help="batch dir name (default: timestamp)")
     vec.set_defaults(func=cmd_vector)
+
+    img = sub.add_parser("image", help="generate original high-res raster images (jpg/png/webp)")
+    img.add_argument("--sketch", default="all", help="sketch name or 'all'")
+    img.add_argument("--count", type=int, default=3, help="images per sketch")
+    img.add_argument("--seed-start", type=int, default=100, dest="seed_start")
+    img.add_argument("--batch", default=None, help="batch dir name (default: timestamp)")
+    img.add_argument("--aspect", default="16:9", choices=["16:9", "9:16"], help="aspect ratio")
+    img.add_argument("--format", default="jpg", choices=["jpg", "png", "webp"], help="output format")
+    img.set_defaults(func=cmd_image)
 
     args = p.parse_args(argv)
     return args.func(args)
