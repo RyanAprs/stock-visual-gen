@@ -13,6 +13,7 @@ from . import checks as checks_mod
 from . import render as render_mod
 from . import metadata as meta_mod
 from . import assets as assets_mod
+from . import vector as vector_mod
 
 console = Console()
 
@@ -276,6 +277,37 @@ def cmd_assets(args) -> int:
     return 0
 
 
+def cmd_vector(args) -> int:
+    """Generate original flat-vector assets (SVG master + EPS + JPEG preview)."""
+    cfg = Config.load(args.config)
+    styles = vector_mod.VECTOR_STYLES if args.style == "all" else [args.style]
+    batch = _batch_dir(cfg, args.batch)
+    vec_dir = batch / "vector"
+    reg = assets_mod.Registry.load(batch)
+    idx = len(reg.of_kind(assets_mod.KIND_VECTOR))
+    made = 0
+    for style in styles:
+        for k in range(args.count):
+            seed = args.seed_start + k
+            idx += 1
+            console.print(f"[cyan]▶ vector[/] {style} seed={seed} → vec_{idx:03d}")
+            try:
+                info = vector_mod.render_vector(style, seed, vec_dir, idx)
+            except Exception as e:
+                console.print(f"  [red]✗ {e}[/]"); return 3
+            reg.add(assets_mod.Asset(
+                file=f"vector/{info['file']}", kind=assets_mod.KIND_VECTOR,
+                source=assets_mod.SOURCE_ORIGINAL, sketch=style, seed=seed,
+                width=info["width"], height=info["height"],
+            ))
+            reg.save()
+            made += 1
+            console.print(f"  [green]✓[/] {info['file']} + .svg + preview.jpg")
+    console.print(f"\n[green]✓ {made} vectors[/] in {vec_dir}")
+    console.print(f"[dim]Next: stockgen metadata --batch {batch.name} --kind vector[/]")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="stockgen",
                                 description="Generate ORIGINAL motion-graphics clips + Adobe Stock CSV")
@@ -311,6 +343,14 @@ def main(argv=None) -> int:
     a = sub.add_parser("assets", help="list/validate the IP-source registry for a batch")
     a.add_argument("--batch", default=None, help="batch dir name (default: newest)")
     a.set_defaults(func=cmd_assets)
+
+    vec = sub.add_parser("vector", help="generate original flat-vector assets (SVG+EPS+preview)")
+    vec.add_argument("--style", default="all",
+                     help="style or 'all' (" + ", ".join(vector_mod.VECTOR_STYLES) + ")")
+    vec.add_argument("--count", type=int, default=3, help="vectors per style")
+    vec.add_argument("--seed-start", type=int, default=100, dest="seed_start")
+    vec.add_argument("--batch", default=None, help="batch dir name (default: timestamp)")
+    vec.set_defaults(func=cmd_vector)
 
     args = p.parse_args(argv)
     return args.func(args)

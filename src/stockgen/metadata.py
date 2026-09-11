@@ -54,6 +54,19 @@ SKETCH_DESC = {
     "data":      ("animated abstract data visualization shapes",
                   ["data", "visualization", "abstract", "shapes", "motion", "tech",
                    "digital", "background", "loop", "seamless", "network", "graphic"]),
+    # vector styles (static — no motion words)
+    "icons":     ("flat geometric icon badge design",
+                  ["icon", "flat", "badge", "geometric", "symbol", "app", "ui",
+                   "minimal", "modern", "logo", "button", "sign"]),
+    "burst":     ("abstract radial burst dot pattern",
+                  ["burst", "radial", "dots", "abstract", "pattern", "geometric",
+                   "decorative", "modern", "colorful", "shape", "design", "circle"]),
+    "mosaic":    ("colorful geometric mosaic tile pattern",
+                  ["mosaic", "tiles", "pattern", "geometric", "grid", "abstract",
+                   "colorful", "squares", "decorative", "modern", "texture", "design"]),
+    "orbit":     ("concentric orbit ring geometric design",
+                  ["orbit", "rings", "concentric", "circles", "geometric", "abstract",
+                   "target", "modern", "minimal", "design", "shape", "decorative"]),
 }
 
 PALETTE_WORDS = {
