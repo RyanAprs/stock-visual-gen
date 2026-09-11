@@ -19,6 +19,7 @@ from . import image as image_mod
 from . import ingest as ingest_mod
 from . import upscale as upscale_mod
 from . import vectorize as vectorize_mod
+from . import ui as ui_mod
 
 console = Console()
 
@@ -282,6 +283,11 @@ def cmd_assets(args) -> int:
     return 0
 
 
+def cmd_ui(args) -> int:
+    """Launch the local web UI (drag&drop + before/after preview)."""
+    return ui_mod.serve(port=args.port, open_browser=not args.no_browser)
+
+
 def cmd_vectorize(args) -> int:
     """Trace an ORIGINAL raster -> SVG+EPS+preview. GUARDRAIL: original/ai only."""
     cfg = Config.load(args.config)
@@ -459,6 +465,7 @@ def cmd_menu(args) -> int:
         ("vectorize", "Trace an original raster to SVG+EPS"),
         ("metadata",  "Build Adobe Stock CSV(s) for a batch"),
         ("assets",    "List/validate a batch's IP-source registry"),
+        ("ui",        "Launch web UI (drag&drop, before/after preview)"),
         ("doctor",    "Check environment"),
         ("quit",      "Exit"),
     ]
@@ -483,6 +490,9 @@ def cmd_menu(args) -> int:
         try:
             if sel == "doctor":
                 cmd_doctor(ns)
+            elif sel == "ui":
+                ns.port = 8765; ns.no_browser = False
+                cmd_ui(ns)
             elif sel == "assets":
                 ns.batch = _menu_prompt("batch name (blank=newest):") or None
                 cmd_assets(ns)
@@ -643,6 +653,11 @@ def main(argv=None) -> int:
     vz.set_defaults(func=cmd_vectorize)
 
     sub.add_parser("menu", help="interactive terminal menu (pick an action)").set_defaults(func=cmd_menu)
+
+    ui = sub.add_parser("ui", help="launch local web UI (drag&drop + before/after preview)")
+    ui.add_argument("--port", type=int, default=8765)
+    ui.add_argument("--no-browser", action="store_true", help="don't auto-open the browser")
+    ui.set_defaults(func=cmd_ui)
 
     args = p.parse_args(argv)
     if not getattr(args, "func", None):
