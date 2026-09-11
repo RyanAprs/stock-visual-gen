@@ -1,0 +1,9 @@
+{
+  "name": "stockgen-render",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Headless p5.js frame renderer for stockgen",
+  "dependencies": {
+    "puppeteer": "^23.0.0"
+  }
+}

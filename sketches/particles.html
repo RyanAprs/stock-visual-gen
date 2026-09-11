@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>particles</title>
+<script>p5.disableFriendlyErrors = true;</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
+<style>html,body{margin:0;padding:0;overflow:hidden;background:#000}canvas{display:block}</style>
+</head>
+<body>
+<script>
+// === stockgen sketch: flow-field particles ===
+// Original generative art. Seamless loop via looped noise time (cos/sin of angle).
+// Params injected by renderer via window.STOCKGEN (seed, width, height, frames).
+const P = Object.assign({
+  seed: 42, width: 3840, height: 2160, frames: 300,
+}, window.STOCKGEN || {});
+
+let particles = [];
+let bg;
+const NUM = 9000;
+let PAL;
+
+// curated palettes (indexed by seed) — designed, not random RGB
+const PALETTES = [
+  { bg:'#070b14', hues:[200,210,190], sat:70, bri:95 },   // deep ocean blue
+  { bg:'#0d0710', hues:[300,320,280], sat:65, bri:92 },   // violet nebula
+  { bg:'#0a0a06', hues:[40,30,50],    sat:75, bri:96 },   // warm gold
+  { bg:'#050d0a', hues:[150,160,140], sat:60, bri:90 },   // emerald
+  { bg:'#100806', hues:[10,20,350],   sat:70, bri:94 },   // ember red
+];
+
+function setup() {
+  createCanvas(P.width, P.height);
+  pixelDensity(1);
+  colorMode(HSB, 360, 100, 100, 100);
+  randomSeed(P.seed); noiseSeed(P.seed);
+  PAL = PALETTES[P.seed % PALETTES.length];
+  bg = color(PAL.bg);
+  background(bg);
+  for (let i = 0; i < NUM; i++) particles.push(new Particle());
+  noLoop();                 // renderer controls frame advance
+  window._p5Ready = true;
+}
+
+function draw() {
+  // fade trails (persistent) — gives silky motion streaks
+  noStroke();
+  fill(hue(bg), saturation(bg), brightness(bg), 6);
+  rect(0, 0, width, height);
+
+  const t = frameCount / P.frames;      // 0..1 over the loop
+  const ang = TWO_PI * t;               // loop param
+  for (const p of particles) { p.update(ang); p.show(); }
+}
+
+class Particle {
+  constructor() { this.reset(); this.life = random(100, 400); this.age = random(this.life); }
+  reset() {
+    this.x = random(width); this.y = random(height);
+    const hi = floor(random(PAL.hues.length));
+    this.h = PAL.hues[hi] + random(-12, 12);
+    this.w = random(0.8, 3.0);
+    this.spd = random(0.6, 2.6);
+  }
+  update(ang) {
+    const scl = 0.0009;
+    // looped noise: sample a circle in noise-time so frame 0 == frame N
+    const n = noise(this.x*scl, this.y*scl, 0.5 + 0.5*Math.cos(ang));
+    const a = n * TWO_PI * 3;
+    this.px = this.x; this.py = this.y;
+    this.x += Math.cos(a) * this.spd;
+    this.y += Math.sin(a) * this.spd;
+    this.age++;
+    if (this.age > this.life || this.x<0||this.x>width||this.y<0||this.y>height) {
+      this.reset(); this.age = 0; this.px = this.x; this.py = this.y;
+    }
+  }
+  show() {
+    stroke(this.h % 360, PAL.sat, PAL.bri, 70);
+    strokeWeight(this.w);
+    line(this.px, this.py, this.x, this.y);
+  }
+}
+</script>
+</body>
+</html>

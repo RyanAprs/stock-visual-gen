@@ -1,0 +1,32 @@
+# ---- stockgen config ----
+
+# Output resolution (Adobe Stock wants >= 4MP for video; 4K = 8.3MP)
+resolution: "3840x2160"          # 4K UHD
+fps: 30
+duration_sec: 10                 # per clip (stock loops: 8-15s ideal)
+
+render:
+  sketches_dir: "sketches"
+  # chrome/chromium path override (blank = puppeteer's bundled chrome)
+  chrome_path: ""
+
+# ---- Metadata (Adobe Stock CSV) ----
+metadata:
+  provider: "ollama"             # ollama | groq | rule
+  ollama_model: "llama3.2:3b"
+  ollama_host: "http://localhost:11434"
+  keywords_count: 25             # Adobe Stock allows up to 49; 25-40 is the sweet spot
+  # Adobe Stock category IDs: https://helpx.adobe.com/stock/contributor/help/... 
+  # 8 = Backgrounds/Textures, 11 = Graphic Resources
+  default_category: 8
+
+# ---- Clip loop ----
+loop: true                       # render seamless loops (stock buyers prefer loops)
+
+# ---- Music (for compiled watch-videos; individual stock clips stay silent) ----
+music:
+  enabled: true
+  provider: "jamendo"            # jamendo (auto-fetch) | local (files only)
+  mood: "chillout"               # single-word Jamendo tag: chillout/ambient/relaxing/lounge
+  dir: "assets/music"            # local files here take priority over Jamendo
+  volume: 0.5                    # 0..1 background level for compiled videos
