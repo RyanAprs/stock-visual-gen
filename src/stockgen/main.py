@@ -93,11 +93,36 @@ def cmd_metadata(args) -> int:
         if not batches:
             console.print("[red]no batches found[/]"); return 2
         batch = batches[-1]
+
+    provider = cfg.get("metadata.provider", "ollama")
+
+    # registry-driven path (multi-kind: video/image/vector)
+    reg = assets_mod.Registry.load(batch)
+    if reg.assets:
+        errs = reg.validate()
+        if errs:
+            console.print(f"[red]✗ guardrail: {len(errs)} non-sellable asset(s) — refusing.[/]")
+            for e in errs:
+                console.print(f"  [red]•[/] {e}")
+            return 1
+        kind_filter = getattr(args, "kind", "all")
+        if kind_filter and kind_filter != "all":
+            sel = assets_mod.Registry(reg.path, reg.of_kind(kind_filter))
+        else:
+            sel = reg
+        console.print(f"[bold]metadata[/] ({provider}) for {len(sel.assets)} assets in {batch.name}")
+        written = meta_mod.build_per_kind_csvs(cfg, sel, batch)
+        for kind, path in written.items():
+            console.print(f"  [green]✓ {kind}[/] → {path.name} ({len(sel.of_kind(kind))} rows)")
+        _write_upload_checklist(batch, reg)  # checklist always from FULL registry
+        console.print(f"\n[green]✓ CSV(s) + upload_checklist.txt[/] in {batch}")
+        return 0
+
+    # legacy path: clips.json only (video)
     manifest = batch / "clips.json"
     if not manifest.exists():
-        console.print(f"[red]no clips.json in {batch}[/]"); return 2
+        console.print(f"[red]no registry.json or clips.json in {batch}[/]"); return 2
     clips = json.loads(manifest.read_text())
-    provider = cfg.get("metadata.provider", "ollama")
     console.print(f"[bold]metadata[/] ({provider}) for {len(clips)} clips in {batch.name}")
     rows = []
     for c in clips:
@@ -108,6 +133,35 @@ def cmd_metadata(args) -> int:
     console.print(f"\n[green]✓ CSV:[/] {out_csv}")
     console.print("[dim]Upload clips + this CSV to Adobe Stock contributor portal.[/]")
     return 0
+
+
+def _write_upload_checklist(batch, reg) -> None:
+    ai_assets = [a for a in reg.assets if a.is_ai]
+    lines = [
+        "Adobe Stock upload checklist",
+        "=" * 32,
+        f"batch: {batch.name}",
+        f"total sellable assets: {len(reg.assets)}",
+        "",
+        "Per-kind CSV: upload the matching metadata_<kind>.csv with each asset group.",
+        "Vector: upload the .eps + JPEG preview (keep .svg as local master).",
+        "Video: min 4MP (4K = 3840x2160 is safe). Image: min 4MP, sRGB.",
+        "",
+    ]
+    if ai_assets:
+        lines += [
+            "AI-GENERATED ASSETS — you MUST tick 'Created using generative AI tools'",
+            "in the contributor portal for each of these (CSV has no AI column):",
+        ]
+        lines += [f"  • {a.file}  (source={a.source})" for a in ai_assets]
+        lines += [
+            "",
+            "Confirm your Google Flow/Veo plan grants COMMERCIAL rights (paid plan).",
+            "Free/trial output is NOT licensed for stock resale.",
+        ]
+    else:
+        lines.append("No AI assets in this batch — no AI disclosure needed.")
+    (batch / "upload_checklist.txt").write_text("\n".join(lines) + "\n")
 
 
 def cmd_batch(args) -> int:
@@ -250,6 +304,8 @@ def main(argv=None) -> int:
 
     m = sub.add_parser("metadata", help="generate Adobe Stock CSV for a batch")
     m.add_argument("--batch", default=None, help="batch dir name (default: newest)")
+    m.add_argument("--kind", default="all", choices=["all", "video", "image", "vector"],
+                   help="limit CSV to one asset kind (default: all)")
     m.set_defaults(func=cmd_metadata)
 
     a = sub.add_parser("assets", help="list/validate the IP-source registry for a batch")

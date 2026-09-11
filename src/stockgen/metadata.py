@@ -13,9 +13,29 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 from pathlib import Path
 
 import requests
+
+# generator brand names forbidden in Adobe Stock titles/keywords for AI content.
+# (Adobe rejects metadata naming the AI tool used.)
+FORBIDDEN_WORDS = {
+    "veo", "googleflow", "google flow", "flow", "midjourney", "dalle", "dall-e",
+    "dall·e", "stable diffusion", "stablediffusion", "sora", "runway", "kling",
+    "firefly", "imagen", "gemini", "chatgpt", "openai", "leonardo", "ideogram",
+    "pika", "luma", "gen-3", "gen3", "wan", "flux", "sdxl", "ai", "aigenerated",
+    "ai-generated", "ai generated",
+}
+
+# per-kind vocabulary appended to titles/keywords so image & vector read right.
+KIND_VOCAB = {
+    "video":  ([], ["4k", "uhd", "motion", "loop", "seamless", "footage", "animation"]),
+    "image":  ([], ["high resolution", "background", "graphic", "digital", "wallpaper"]),
+    "vector": (["vector illustration"],
+               ["vector", "eps", "svg", "flat", "illustration", "icon", "scalable", "graphic"]),
+}
+
 
 # sketch -> base descriptive vocabulary (seeds the LLM + rule fallback)
 SKETCH_DESC = {
@@ -129,16 +149,59 @@ def _gen_rule(cfg, clip: dict) -> tuple[str, list[str]]:
     return title, kws[:n]
 
 
+def _strip_forbidden(title: str, kws: list[str]) -> tuple[str, list[str]]:
+    """Remove generator brand names (Adobe forbids naming AI tools in metadata)."""
+    # title: drop forbidden tokens word-wise
+    def clean_title(s: str) -> str:
+        low = s.lower()
+        for w in sorted(FORBIDDEN_WORDS, key=len, reverse=True):
+            low2 = re.sub(rf"(?<![\w-]){re.escape(w)}(?![\w-])", " ", low)
+            if low2 != low:
+                # rebuild original-case string by removing same spans (case-insensitive)
+                s = re.sub(rf"(?i)(?<![\w-]){re.escape(w)}(?![\w-])", " ", s)
+                low = low2
+        return re.sub(r"\s{2,}", " ", s).strip(" -—,")
+
+    clean_kws = [k for k in kws if k.strip().lower() not in FORBIDDEN_WORDS]
+    return clean_title(title), clean_kws
+
+
 def gen_for_clip(cfg, clip: dict) -> dict:
     provider = cfg.get("metadata.provider", "ollama")
+    kind = clip.get("kind", "video")
+    is_ai = bool(clip.get("is_ai", False))
     res = None
     if provider in ("ollama", "groq"):
         res = _gen_llm(cfg, clip)
     if not res:
         res = _gen_rule(cfg, clip)   # always succeeds
     title, kws = res
+
+    # apply per-kind vocabulary (image/vector need their own descriptors)
+    kv_title, kv_kws = KIND_VOCAB.get(kind, ([], []))
+    n = cfg.get("metadata.keywords_count", None) or (49 if kind == "vector" else 25)
+    # kind vocab is PREPENDED (most relevant first) so it survives truncation
+    merged: list[str] = []
+    for k in kv_kws + kws:
+        if k not in merged:
+            merged.append(k)
+    kws = merged
+    # drop video-only descriptors that make no sense on stills/vectors
+    if kind in ("image", "vector"):
+        kws = [k for k in kws if k not in {"4k", "uhd", "loop", "seamless", "motion",
+                                           "animation", "footage", "screensaver", "vj"}]
+        # strip motion-loop phrasing from titles of still assets
+        title = re.sub(r"\s*—\s*seamless 4K loop", "", title, flags=re.I).strip()
+    if kv_title and kind == "vector" and "vector" not in title.lower():
+        title = f"{title} — {kv_title[0]}"
+    kws = kws[:n]
+
+    # AI content: strip generator brand names from metadata (Adobe rule)
+    if is_ai:
+        title, kws = _strip_forbidden(title, kws)
+
     return {
-        "Filename": clip["file"],
+        "Filename": clip.get("file") or clip.get("Filename"),
         "Title": title,
         "Keywords": ", ".join(kws),
         "Category": cfg.get("metadata.default_category", 8),
@@ -154,3 +217,33 @@ def write_csv(rows: list[dict], out_csv: Path) -> Path:
         for r in rows:
             w.writerow(r)
     return out_csv
+
+
+def gen_for_asset(cfg, asset) -> dict:
+    """Build a metadata row from an assets.Asset (registry-driven, kind/AI aware)."""
+    clip = {
+        "file": asset.file,
+        "kind": asset.kind,
+        "is_ai": asset.is_ai,
+        "sketch": asset.sketch or "particles",
+        "seed": asset.seed or 0,
+    }
+    return gen_for_clip(cfg, clip)
+
+
+def build_per_kind_csvs(cfg, registry, batch_dir: Path) -> dict[str, Path]:
+    """Generate one Adobe Stock CSV per asset kind present in the registry.
+
+    Only SELLABLE assets are written; blocked (download) assets are skipped and
+    must have already been rejected upstream. Returns {kind: csv_path}.
+    """
+    written: dict[str, Path] = {}
+    by_kind: dict[str, list] = {}
+    for a in registry.sellable():
+        by_kind.setdefault(a.kind, []).append(a)
+    for kind, items in by_kind.items():
+        rows = [gen_for_asset(cfg, a) for a in items]
+        out = batch_dir / f"metadata_{kind}.csv"
+        write_csv(rows, out)
+        written[kind] = out
+    return written
