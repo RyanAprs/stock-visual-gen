@@ -15,6 +15,7 @@ from . import metadata as meta_mod
 from . import assets as assets_mod
 from . import vector as vector_mod
 from . import image as image_mod
+from . import ingest as ingest_mod
 
 console = Console()
 
@@ -278,6 +279,31 @@ def cmd_assets(args) -> int:
     return 0
 
 
+def cmd_ingest(args) -> int:
+    """Ingest external AI video (Google Flow/Veo, paid plan) into a batch."""
+    cfg = Config.load(args.config)
+    src = Path(args.path).expanduser()
+    if not src.exists():
+        console.print(f"[red]path not found: {src}[/]"); return 2
+    batch = _batch_dir(cfg, args.batch)
+    try:
+        res = ingest_mod.ingest_dir(cfg, src, batch, source=args.source)
+    except Exception as e:
+        console.print(f"[red]✗ {e}[/]"); return 3
+    for a in res["added"]:
+        console.print(f"  [green]✓[/] {a['src']} → {a['dest']} ({a['mp']}MP, {a['duration']}s)")
+    for name, why in res["rejected"]:
+        console.print(f"  [red]✗ rejected[/] {name}: {why}")
+    console.print(f"\n[green]✓ {len(res['added'])} ingested[/], "
+                  f"[yellow]{len(res['rejected'])} rejected[/] → {batch}")
+    if res["added"] and args.source == assets_mod.SOURCE_AI_GOOGLEFLOW:
+        console.print("[yellow]⚠ AI content:[/] confirm your Google Flow/Veo plan grants "
+                      "COMMERCIAL rights (paid plan). Free/trial output is NOT sellable.")
+        console.print("[dim]Metadata will strip generator names; tick 'generative AI' at upload.[/]")
+    console.print(f"[dim]Next: stockgen metadata --batch {batch.name} --kind video[/]")
+    return 0
+
+
 def cmd_image(args) -> int:
     """Generate original high-res raster images (jpg/png/webp) from sketches."""
     cfg = Config.load(args.config)
@@ -394,6 +420,14 @@ def main(argv=None) -> int:
     img.add_argument("--aspect", default="16:9", choices=["16:9", "9:16"], help="aspect ratio")
     img.add_argument("--format", default="jpg", choices=["jpg", "png", "webp"], help="output format")
     img.set_defaults(func=cmd_image)
+
+    ing = sub.add_parser("ingest", help="ingest external AI video (Google Flow/Veo, paid plan)")
+    ing.add_argument("path", help="video file or directory to ingest")
+    ing.add_argument("--source", default=assets_mod.SOURCE_AI_GOOGLEFLOW,
+                     choices=sorted(assets_mod.SELLABLE_SOURCES),
+                     help="IP source tag (default: ai_googleflow)")
+    ing.add_argument("--batch", default=None, help="batch dir name (default: timestamp)")
+    ing.set_defaults(func=cmd_ingest)
 
     args = p.parse_args(argv)
     return args.func(args)
