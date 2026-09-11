@@ -53,6 +53,7 @@ class Asset:
     is_ai: bool = False             # AI-generated (disclosure required)
     sketch: str | None = None       # originating sketch/style, if any
     seed: int | None = None
+    desc: str | None = None         # user description of the content (drives title/keywords)
     width: int | None = None
     height: int | None = None
     aspect: str | None = None

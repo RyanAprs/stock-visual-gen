@@ -24,6 +24,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .config import Config
+import subprocess
+
 from . import assets as assets_mod
 from . import upscale as upscale_mod
 from . import vectorize as vectorize_mod
@@ -56,7 +58,7 @@ INDEX_HTML = r"""<!doctype html>
    color:var(--mut);transition:.15s;cursor:pointer}
  .drop.hot{border-color:var(--acc);background:#101a24;color:var(--fg)}
  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:16px 0}
- select,button{background:var(--card);color:var(--fg);border:1px solid #2a2f3c;
+ select,button,input{background:var(--card);color:var(--fg);border:1px solid #2a2f3c;
    border-radius:8px;padding:8px 12px;font-size:14px}
  button.go{background:var(--acc);color:#04121e;border:0;font-weight:600;cursor:pointer}
  button.go:disabled{opacity:.5;cursor:default}
@@ -76,11 +78,19 @@ INDEX_HTML = r"""<!doctype html>
  th{color:var(--mut);font-weight:600} .pill{padding:1px 8px;border-radius:10px;font-size:11px}
  .pill.ok{background:#12321f;color:var(--ok)} .pill.ai{background:#2a2410;color:#e6c05a}
  .hide{display:none}
+ video{width:100%;border-radius:12px;background:#0a0c10;margin-top:12px}
+ .vid-cmp{display:none;gap:16px;margin-top:18px}
+ .vid-cmp>div{flex:1;min-width:0} .vid-cmp video{width:100%}
+ .vid-cmp .lbl{position:static;display:inline-block;margin-bottom:6px}
+ .info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin:12px 0}
+ .info-grid>div{background:var(--card);padding:8px 12px;border-radius:8px}
+ .info-grid .k{font-size:11px;color:var(--mut)} .info-grid .v{font-size:15px;font-weight:600}
 </style></head><body>
 <header><h1>stockgen</h1><span class="batch" id="batchName">…</span>
  <div class="tabs">
    <div class="tab on" data-t="upscale">Upscale → 4K</div>
    <div class="tab" data-t="vectorize">Raster → SVG</div>
+   <div class="tab" data-t="video">Video</div>
    <div class="tab" data-t="export">Metadata / Export</div>
  </div>
 </header>
@@ -93,6 +103,8 @@ INDEX_HTML = r"""<!doctype html>
       <select id="source"><option value="original">original (my work)</option>
         <option value="ai_googleflow">ai_googleflow (paid plan)</option></select></label>
     <span id="opts"></span>
+    <label style="flex:1;min-width:200px">Describe it (for title/keywords):
+      <input id="desc" placeholder="optional — AI describes it automatically" style="width:100%"></label>
     <button id="go" class="go" disabled>Run</button>
   </div>
   <div id="status" class="status">No file loaded.</div>
@@ -106,6 +118,29 @@ INDEX_HTML = r"""<!doctype html>
   <div id="links" class="links meta"></div>
  </div>
 
+ <div id="videoPane" class="hide">
+  <div id="vDrop" class="drop">Drag &amp; drop a video here, or click to choose<br>
+    <small>MP4 / MOV / WEBM</small><input id="vFile" type="file" accept="video/*" hidden></div>
+  <div class="row">
+    <label>Source:
+      <select id="vSource"><option value="original">original (my work)</option>
+        <option value="ai_googleflow">ai_googleflow (paid plan)</option></select></label>
+    <label style="flex:1;min-width:200px">Describe it (for title/keywords):
+      <input id="vDesc" placeholder="optional — AI describes it automatically" style="width:100%"></label>
+    <button id="vUp" class="go" disabled>Upscale → 4K</button>
+    <button id="vPrep" class="go" disabled style="background:var(--ok);color:#04121e">Prepare native for Adobe ✓</button>
+  </div>
+  <div class="meta" style="margin-top:-8px">Adobe forbids up-res (HD→4K triggers their low-quality warning). For Adobe, always submit native resolution — use the green button.</div>
+  <div id="vInfo" class="info-grid"></div>
+  <div id="vStatus" class="status"></div>
+  <video id="vBefore" controls style="display:none"></video>
+  <div id="vCmp" class="vid-cmp">
+    <div><span class="lbl b">BEFORE</span><video id="vCmpB" controls></video></div>
+    <div><span class="lbl a">AFTER (4K)</span><video id="vCmpA" controls></video></div>
+  </div>
+  <div id="vLinks" class="links meta"></div>
+ </div>
+
  <div id="exportPane" class="hide">
   <div class="row">
     <button id="refresh" class="go" style="background:#2a2f3c;color:var(--fg)">Refresh assets</button>
@@ -113,18 +148,22 @@ INDEX_HTML = r"""<!doctype html>
   </div>
   <div id="exStatus" class="status"></div>
   <div id="exLinks" class="links meta"></div>
-  <table id="regTable"><thead><tr><th>File</th><th>Kind</th><th>Source</th><th>AI</th><th>Sellable</th></tr></thead>
+  <table id="regTable"><thead><tr><th>File</th><th>Kind</th><th>Description</th><th>Source</th><th>AI</th><th>Sellable</th></tr></thead>
     <tbody id="regBody"></tbody></table>
  </div>
 </main>
 <script>
-let TAB="upscale", FILE=null;
+let TAB="upscale", FILE=null, VFILE=null;
 const $=id=>document.getElementById(id);
 const drop=$("drop"),file=$("file"),go=$("go"),status=$("status");
+const vDrop=$("vDrop"),vFile=$("vFile"),vUp=$("vUp"),vPrep=$("vPrep"),vStatus=$("vStatus");
 fetch("/api/registry").then(r=>r.json()).then(j=>{$("batchName").textContent="batch: "+j.batch;});
 function setTab(t){TAB=t;document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on",x.dataset.t===t));
-  const ex=t==="export";$("work").classList.toggle("hide",ex);$("exportPane").classList.toggle("hide",!ex);
+  const ex=t==="export",vid=t==="video";
+  $("work").classList.toggle("hide",ex||vid);$("exportPane").classList.toggle("hide",!ex);
+  $("videoPane").classList.toggle("hide",!vid);
   if(ex){loadReg();return;}
+  if(vid)return;
   $("opts").innerHTML = t==="vectorize"
     ? 'Engine: <select id="engine"><option value="vtracer">vtracer (color)</option><option value="potrace">potrace (mono)</option></select>'
     : 'Target: <select id="to"><option value="4k">4K</option></select>';
@@ -141,7 +180,7 @@ function load(f){const r=new FileReader();r.onload=()=>{FILE={name:f.name,data:r
   $("imgB").src=r.result;resetCmp();};r.readAsDataURL(f);}
 go.onclick=async()=>{if(!FILE)return;go.disabled=true;status.className="status";
   status.textContent="Processing… (first upscale can take a while)";
-  const body={name:FILE.name,data:FILE.data,source:$("source").value};
+  const body={name:FILE.name,data:FILE.data,source:$("source").value,desc:$("desc").value.trim()};
   if(TAB==="vectorize")body.engine=$("engine").value; else body.to=$("to").value;
   try{const res=await fetch("/api/"+TAB,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify(body)});const j=await res.json();
@@ -168,10 +207,10 @@ function show(j){$("imgB").src=j.before_url+"?t="+Date.now();
   $("links").innerHTML=links;}
 async function loadReg(){const j=await(await fetch("/api/registry")).json();
   $("batchName").textContent="batch: "+j.batch;
-  $("regBody").innerHTML=j.assets.map(a=>`<tr><td>${a.file}</td><td>${a.kind}</td><td>${a.source}</td>
+  $("regBody").innerHTML=j.assets.map(a=>`<tr><td>${a.file}</td><td>${a.kind}</td><td>${a.desc||'<span style="color:var(--mut)">—</span>'}</td><td>${a.source}</td>
     <td>${a.is_ai?'<span class="pill ai">AI</span>':''}</td>
     <td>${a.sellable?'<span class="pill ok">✓</span>':'✗'}</td></tr>`).join("")
-    || '<tr><td colspan=5 style="color:var(--mut)">No assets yet — upscale or vectorize something first.</td></tr>';}
+    || '<tr><td colspan=6 style="color:var(--mut)">No assets yet — upscale or vectorize something first.</td></tr>';}
 $("refresh").onclick=loadReg;
 $("gen").onclick=async()=>{$("exStatus").className="status";$("exStatus").textContent="Generating…";
   try{const j=await(await fetch("/api/metadata",{method:"POST"})).json();
@@ -181,6 +220,52 @@ $("gen").onclick=async()=>{$("exStatus").className="status";$("exStatus").textCo
     if(j.checklist_url)l+=`<a href="${j.checklist_url}" download>upload_checklist.txt</a>`;
     $("exLinks").innerHTML=l;loadReg();
   }catch(e){$("exStatus").className="status err";$("exStatus").textContent="✗ "+e.message}};
+/* ---- VIDEO TAB ---- */
+vDrop.onclick=()=>vFile.click();
+["dragover","dragenter"].forEach(e=>vDrop.addEventListener(e,ev=>{ev.preventDefault();vDrop.classList.add("hot")}));
+["dragleave","drop"].forEach(e=>vDrop.addEventListener(e,ev=>{ev.preventDefault();vDrop.classList.remove("hot")}));
+vDrop.addEventListener("drop",ev=>{if(ev.dataTransfer.files[0])loadV(ev.dataTransfer.files[0])});
+vFile.addEventListener("change",()=>{if(vFile.files[0])loadV(vFile.files[0])});
+function loadV(f){
+  VFILE=f; vUp.disabled=false; vPrep.disabled=false;
+  vStatus.textContent="Loaded: "+f.name+" ("+Math.round(f.size/1024/1024)+" MB)";vStatus.className="status";
+  $("vBefore").src=URL.createObjectURL(f);$("vBefore").style.display="block";
+  $("vCmp").style.display="none";$("vInfo").innerHTML="";$("vLinks").innerHTML="";
+  /* probe for info */
+  const r=new FileReader();r.onload=async()=>{
+    try{const res=await fetch("/api/video_probe",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name:f.name,data:r.result})});const j=await res.json();
+      if(j.width){$("vInfo").innerHTML=
+        `<div><div class="k">Resolution</div><div class="v">${j.width}×${j.height}</div></div>
+         <div><div class="k">Duration</div><div class="v">${j.duration}s</div></div>
+         <div><div class="k">FPS</div><div class="v">${j.fps}</div></div>
+         <div><div class="k">Codec</div><div class="v">${j.codec||'—'}</div></div>
+         <div><div class="k">4K ready</div><div class="v">${j.is_4k?'✓ yes':'✗ no'}</div></div>`}
+    }catch(e){}};r.readAsDataURL(f);}
+vUp.onclick=async()=>{if(!VFILE)return;vUp.disabled=true;vStatus.className="status";
+  vStatus.textContent="Upscaling… this can take several minutes for large videos.";
+  const r=new FileReader();r.onload=async()=>{
+    try{const res=await fetch("/api/video_upscale",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name:VFILE.name,data:r.result,source:$("vSource").value,desc:$("vDesc").value.trim()})});
+      const j=await res.json();if(!res.ok)throw new Error(j.error||"HTTP "+res.status);
+      $("vCmpB").src=$("vBefore").src;
+      $("vCmpA").src=j.after_url+"?t="+Date.now();
+      $("vCmp").style.display="flex";$("vBefore").style.display="none";
+      $("vLinks").innerHTML=`<a href="${j.after_url}" download>Download 4K video</a>`;
+      vStatus.className="status ok";vStatus.textContent="Done — "+j.meta+" · added to batch.";
+    }catch(e){vStatus.className="status err";vStatus.textContent="✗ "+e.message}
+    vUp.disabled=false;};r.readAsDataURL(VFILE);};
+vPrep.onclick=async()=>{if(!VFILE)return;vPrep.disabled=true;vUp.disabled=true;vStatus.className="status";
+  vStatus.textContent="Preparing native file…";
+  const r=new FileReader();r.onload=async()=>{
+    try{const res=await fetch("/api/video_prepare",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name:VFILE.name,data:r.result,source:$("vSource").value,desc:$("vDesc").value.trim()})});
+      const j=await res.json();if(!res.ok)throw new Error(j.error||"HTTP "+res.status);
+      $("vBefore").style.display="block";$("vCmp").style.display="none";
+      $("vLinks").innerHTML=`<a href="${j.after_url}" download>Download Adobe-ready file</a>`;
+      vStatus.className="status ok";vStatus.textContent="Done — "+j.meta+" · submit THIS file to Adobe.";
+    }catch(e){vStatus.className="status err";vStatus.textContent="✗ "+e.message}
+    vPrep.disabled=false;vUp.disabled=false;};r.readAsDataURL(VFILE);};
 setTab("upscale");
 </script></body></html>"""
 
@@ -218,13 +303,15 @@ def _make_handler():
             ctype = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                      "webp": "image/webp", "svg": "image/svg+xml",
                      "eps": "application/postscript", "csv": "text/csv",
-                     "txt": "text/plain"}.get(ext, "application/octet-stream")
+                     "txt": "text/plain", "mp4": "video/mp4", "mov": "video/quicktime",
+                     "webm": "video/webm"}.get(ext, "application/octet-stream")
             return self._send(200, fp.read_bytes(), ctype)
 
         # ---- POST ----
         def do_POST(self):
             body = {}
-            if self.path in ("/api/upscale", "/api/vectorize"):
+            if self.path in ("/api/upscale", "/api/vectorize", "/api/video_probe", "/api/video_upscale",
+                               "/api/video_prepare"):
                 try:
                     n = int(self.headers.get("Content-Length", 0))
                     body = json.loads(self.rfile.read(n) or b"{}")
@@ -235,6 +322,12 @@ def _make_handler():
                     return self._send(200, json.dumps(self._upscale(body)))
                 if self.path == "/api/vectorize":
                     return self._send(200, json.dumps(self._vectorize(body)))
+                if self.path == "/api/video_probe":
+                    return self._send(200, json.dumps(self._video_probe(body)))
+                if self.path == "/api/video_upscale":
+                    return self._send(200, json.dumps(self._video_upscale(body)))
+                if self.path == "/api/video_prepare":
+                    return self._send(200, json.dumps(self._video_prepare(body)))
                 if self.path == "/api/metadata":
                     return self._send(200, json.dumps(self._metadata()))
                 return self._send(404, json.dumps({"error": "unknown endpoint"}))
@@ -246,6 +339,9 @@ def _make_handler():
         def _next_idx(self, reg, kind):
             return len(reg.of_kind(kind)) + 1
 
+        def _desc_of(self, req):
+            return (req.get("desc") or "").strip() or meta_mod.desc_from_filename(req.get("name", ""))
+
         def _upscale(self, req):
             source = req.get("source", "original")
             upscale_mod._assert_source_ok(source)
@@ -256,7 +352,7 @@ def _make_handler():
             info = upscale_mod.upscale_image(src, out, req.get("to", "4k"))
             reg.add(assets_mod.Asset(
                 file=f"image/{out.name}", kind=assets_mod.KIND_IMAGE, source=source,
-                sketch="gradient", seed=idx))
+                sketch="gradient", seed=idx, desc=self._desc_of(req)))
             reg.save()
             return {"before_url": f"/files/_src/{src.name}", "after_url": f"/files/image/{out.name}",
                     "meta": f"{info['from']} → {info['to']}  ({info.get('engine','')})  · added as image/{out.name}"}
@@ -270,7 +366,7 @@ def _make_handler():
                                            engine=req.get("engine", "vtracer"))
             reg.add(assets_mod.Asset(
                 file=f"vector/{info['file']}", kind=assets_mod.KIND_VECTOR, source=source,
-                sketch="icons", seed=idx))
+                sketch="icons", seed=idx, desc=self._desc_of(req)))
             reg.save()
             return {"before_url": f"/files/_src/{src.name}",
                     "preview_url": f"/files/vector/{info['preview']}",
@@ -278,11 +374,72 @@ def _make_handler():
                     "eps_url": f"/files/vector/{info['file']}",
                     "meta": f"traced with {info['engine']}  · added as vector/{info['file']}"}
 
+        def _video_probe(self, req):
+            """Save video, run ffprobe, return resolution/fps/duration/codec."""
+            src = _b64_to_file(req["data"], _BATCH / "_src" / ("in_" + Path(req["name"]).name))
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height,r_frame_rate,codec_name,duration",
+                 "-show_entries", "format=duration",
+                 "-of", "json", str(src)],
+                capture_output=True, text=True)
+            info = json.loads(out.stdout or "{}")
+            st = (info.get("streams") or [{}])[0]
+            w = int(st.get("width") or 0)
+            h = int(st.get("height") or 0)
+            dur = st.get("duration") or (info.get("format") or {}).get("duration") or "?"
+            if dur != "?":
+                dur = f"{float(dur):.1f}"
+            rfr = st.get("r_frame_rate", "0/1")
+            try:
+                num, den = rfr.split("/")
+                fps = f"{int(num)/int(den):.2f}"
+            except Exception:
+                fps = rfr
+            return {"width": w, "height": h, "duration": dur, "fps": fps,
+                    "codec": st.get("codec_name", ""),
+                    "is_4k": (w >= 3840 or h >= 3840)}
+
+        def _video_upscale(self, req):
+            """Upscale video to 4K, register in batch."""
+            source = req.get("source", "original")
+            upscale_mod._assert_source_ok(source)
+            reg = assets_mod.Registry.load(_BATCH)
+            idx = self._next_idx(reg, assets_mod.KIND_VIDEO)
+            src = _b64_to_file(req["data"], _BATCH / "_src" / ("in_" + Path(req["name"]).name))
+            out = _BATCH / "video" / f"vid_{idx:03d}_4k.mp4"
+            info = upscale_mod.upscale_video(src, out)
+            is_ai = source in assets_mod.AI_SOURCES
+            reg.add(assets_mod.Asset(
+                file=f"video/{out.name}", kind=assets_mod.KIND_VIDEO, source=source,
+                is_ai=is_ai, sketch="gradient", seed=idx, desc=self._desc_of(req)))
+            reg.save()
+            return {"after_url": f"/files/video/{out.name}",
+                    "meta": f"{info['from']} → {info['to']}  · added as video/{out.name}"}
+
+        def _video_prepare(self, req):
+            """Re-encode at NATIVE resolution — the Adobe-compliant path."""
+            source = req.get("source", "original")
+            upscale_mod._assert_source_ok(source)
+            reg = assets_mod.Registry.load(_BATCH)
+            idx = self._next_idx(reg, assets_mod.KIND_VIDEO)
+            src = _b64_to_file(req["data"], _BATCH / "_src" / ("in_" + Path(req["name"]).name))
+            out = _BATCH / "video" / f"vid_{idx:03d}_native.mp4"
+            info = upscale_mod.prepare_native_video(src, out)
+            is_ai = source in assets_mod.AI_SOURCES
+            reg.add(assets_mod.Asset(
+                file=f"video/{out.name}", kind=assets_mod.KIND_VIDEO, source=source,
+                is_ai=is_ai, sketch="gradient", seed=idx, desc=self._desc_of(req)))
+            reg.save()
+            return {"after_url": f"/files/video/{out.name}",
+                    "meta": f"native {info['to']} (CRF14)  · added as video/{out.name}"}
+
         def _registry(self):
             reg = assets_mod.Registry.load(_BATCH)
             return {"batch": _BATCH.name,
                     "assets": [{"file": a.file, "kind": a.kind, "source": a.source,
-                                "is_ai": a.is_ai, "sellable": a.sellable} for a in reg.assets]}
+                                "desc": a.desc, "is_ai": a.is_ai,
+                                "sellable": a.sellable} for a in reg.assets]}
 
         def _metadata(self):
             reg = assets_mod.Registry.load(_BATCH)
@@ -297,7 +454,8 @@ def _make_handler():
             _write_upload_checklist(_BATCH, reg)
             return {"total": len(reg.assets),
                     "csv": {k: f"/files/{p.name}" for k, p in written.items()},
-                    "checklist_url": "/files/upload_checklist.txt"}
+                    "checklist_url": "/files/upload_checklist.txt",
+                    "descs": {a.file: (a.desc or "") for a in reg.assets}}
     return H
 
 

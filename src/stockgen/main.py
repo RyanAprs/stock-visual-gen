@@ -153,6 +153,9 @@ def _write_upload_checklist(batch, reg) -> None:
         "Per-kind CSV: upload the matching metadata_<kind>.csv with each asset group.",
         "Vector: upload the .eps + JPEG preview (keep .svg as local master).",
         "Video: min 4MP (4K = 3840x2160 is safe). Image: min 4MP, sRGB.",
+        "Video: submit NATIVE resolution only — Adobe FORBIDS up-res (HD->4K",
+        "  triggers their low-quality warning). Never submit *_4k.mp4 files whose",
+        "  source was HD; submit the native file instead.",
         "",
     ]
     if ai_assets:

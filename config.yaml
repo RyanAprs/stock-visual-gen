@@ -13,7 +13,7 @@ render:
 # ---- Metadata (Adobe Stock CSV) ----
 metadata:
   provider: "ollama"             # ollama | groq | rule
-  ollama_model: "llama3.2:3b"
+  ollama_model: "qwen3:8b"
   ollama_host: "http://localhost:11434"
   keywords_count: 25             # Adobe Stock allows up to 49; 25-40 is the sweet spot
   # Adobe Stock category IDs: https://helpx.adobe.com/stock/contributor/help/... 

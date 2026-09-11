@@ -52,7 +52,13 @@ def _assert_source_ok(source: str) -> None:
 
 
 def upscale_video(src: Path, out: Path, to: str = "4k") -> dict:
-    """Upscale a video to 4K via ffmpeg lanczos (H.264, yuv420p, high quality)."""
+    """Upscale a video to 4K via ffmpeg lanczos (H.264, yuv420p, high quality).
+
+    WARNING: Adobe Stock FORBIDS up-res (HD->4K): "Submit footage as shot".
+    Up-resed files trigger Adobe's low-quality warning. Only use this for
+    non-Adobe purposes, or when down-converting from >4K sources.
+    For Adobe, use prepare_native_video() instead.
+    """
     w, h = _probe_dims(src)
     tw, th = _target_for(w, h, to)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -67,6 +73,38 @@ def upscale_video(src: Path, out: Path, to: str = "4k") -> dict:
     )
     return {"file": out.name, "from": f"{w}x{h}", "to": f"{tw}x{th}",
             "aspect": "9:16" if th > tw else "16:9"}
+
+
+def _has_audio(path: Path) -> bool:
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=60).stdout.strip()
+        return bool(out)
+    except Exception:
+        return False
+
+
+def prepare_native_video(src: Path, out: Path) -> dict:
+    """Re-encode a video at its NATIVE resolution for Adobe Stock submission.
+
+    Adobe forbids up-res, so the compliant path is: keep native frame size,
+    high-quality H.264 (CRF 14, slow), yuv420p, faststart, audio kept at 48kHz.
+    Native 1920x1080 is a fully accepted Adobe resolution (min 1080 both sides).
+    """
+    w, h = _probe_dims(src)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["ffmpeg", "-y", "-i", str(src),
+           "-c:v", "libx264", "-preset", "slow", "-crf", "14",
+           "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+    if _has_audio(src):
+        cmd += ["-c:a", "aac", "-b:a", "320k", "-ar", "48000"]
+    cmd.append(str(out))
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    nw, nh = _probe_dims(out)
+    return {"file": out.name, "from": f"{w}x{h}", "to": f"{nw}x{nh}",
+            "aspect": "9:16" if nh > nw else "16:9", "native": True}
 
 
 def _realesrgan_bin() -> str | None:

@@ -85,25 +85,46 @@ def _ollama(cfg, prompt: str) -> str | None:
                                 "options": {"temperature": 0.4}},
                           timeout=120)
         r.raise_for_status()
-        return r.json().get("response", "").strip()
+        resp = r.json().get("response", "").strip()
+        # qwen3-style reasoning models may leak <think> blocks — drop them
+        resp = re.sub(r"<think>.*?</think>", "", resp, flags=re.S).strip()
+        return resp
     except Exception as e:
         print(f"  ollama failed: {e}")
         return None
 
 
 def _gen_llm(cfg, clip: dict) -> tuple[str, list[str]] | None:
-    base_desc, base_kw = SKETCH_DESC.get(clip["sketch"], ("abstract motion background", []))
+    base_desc, base_kw = _base_for(clip)
     pal = PALETTE_WORDS.get(clip["seed"] % 5, [])
     n = cfg.get("metadata.keywords_count", 25)
+    kind = clip.get("kind", "video")
+    if clip.get("desc"):
+        # described content: stick to the description ONLY — the model must
+        # not invent scenery (no palette/sketch vocab leaking into titles).
+        subject = (
+            f"You write Adobe Stock metadata for a royalty-free stock {kind}.\n"
+            f"The content is exactly this, nothing else: {base_desc}.\n"
+        )
+        vocab = (
+            f"FORBIDDEN: do not add colors, places, objects, or moods not stated above. "
+            f"Draw keywords ONLY from these words plus generic stock terms: "
+            f"{', '.join(base_kw)}"
+        )
+    else:
+        subject = (
+            f"You write Adobe Stock metadata for a royalty-free 4K motion background video.\n"
+            f"The clip is: {base_desc}. Dominant colors/mood: {', '.join(pal)}.\n"
+        )
+        vocab = f"Base vocabulary to draw from: {', '.join(base_kw + pal)}"
     prompt = (
-        f"You write Adobe Stock metadata for a royalty-free 4K motion background video.\n"
-        f"The clip is: {base_desc}. Dominant colors/mood: {', '.join(pal)}.\n"
+        subject +
         f"Return STRICT JSON only:\n"
         f'{{"title":"<descriptive title, 8-15 words, no hashtags>",'
         f'"keywords":["<{n} SHORT search terms>"]}}\n'
         f"Keyword rules: each keyword is ONE word (or at most two), lowercase, "
         f"NO full phrases or sentences. Most relevant first. Aim for {n} keywords.\n"
-        f"Base vocabulary to draw from: {', '.join(base_kw + pal)}"
+        f"{vocab}"
     )
     out = _ollama(cfg, prompt)
     if not out:
@@ -123,6 +144,45 @@ def _gen_llm(cfg, clip: dict) -> tuple[str, list[str]] | None:
 
 
 _STOP = {"the", "a", "an", "of", "and", "with", "in", "on", "for", "to", "loop"}
+
+
+def desc_from_filename(name: str) -> str:
+    """Derive a content description from an upload filename.
+
+    Strips stockgen prefixes (in_), resolution tags (1080p/4k), trailing
+    date/digit runs, and the extension; underscores/dashes -> spaces.
+    'in_Cartoon_dog_walking_animation_1080p_20260911190856.mp4'
+      -> 'Cartoon dog walking animation'
+    """
+    stem = Path(name).stem
+    stem = re.sub(r"^in_", "", stem, flags=re.I)
+    tokens = re.split(r"[_\-\s]+", stem)
+    drop = {"1080p", "720p", "4k", "8k", "uhd", "hd", "mp4", "mov", "webm",
+            "jpg", "jpeg", "png", "webp", "svg", "eps", "final", "export"}
+    kept = []
+    for t in tokens:
+        t = re.sub(r"\d+$", "", t)      # version/date suffixes glued to words (final2, v3)
+        low = t.lower()
+        if not t or low in drop:
+            continue
+        if re.fullmatch(r"\d{4,}", t):      # timestamps / dates / long numbers
+            continue
+        if re.fullmatch(r"\d+p?", t) and t[0].isdigit():
+            continue
+        kept.append(t)
+    # cut trailing short numeric tail (e.g. version/date fragments)
+    while kept and re.fullmatch(r"\d+", kept[-1]):
+        kept.pop()
+    return " ".join(kept).strip()
+
+
+def _base_for(clip: dict) -> tuple[str, list[str]]:
+    """Resolve (base_desc, base_kw): user desc wins over sketch lookup."""
+    desc = (clip.get("desc") or "").strip()
+    if desc:
+        words = [w for w in re.split(r"\s+", desc.lower()) if w and w not in _STOP]
+        return desc, words
+    return SKETCH_DESC.get(clip["sketch"], ("abstract motion background", []))
 
 
 def _normalize_keywords(raw: list[str], backfill: list[str], n: int) -> list[str]:
@@ -149,9 +209,18 @@ def _normalize_keywords(raw: list[str], backfill: list[str], n: int) -> list[str
 
 
 def _gen_rule(cfg, clip: dict) -> tuple[str, list[str]]:
-    base_desc, base_kw = SKETCH_DESC.get(clip["sketch"], ("abstract motion background", []))
+    base_desc, base_kw = _base_for(clip)
     pal = PALETTE_WORDS.get(clip["seed"] % 5, [])
     n = cfg.get("metadata.keywords_count", 25)
+    if clip.get("desc"):
+        # user-described content: title IS the description (no color prefix)
+        title = f"{base_desc.strip().capitalize()} — seamless 4K loop"
+        kws = []
+        for k in base_kw + ["4k", "uhd", "animation", "backdrop", "creative",
+                            "modern", "smooth", "vibrant", "screensaver", "vj"]:
+            if k not in kws:
+                kws.append(k)
+        return title, kws[:n]
     color = pal[0] if pal else "abstract"
     title = f"{color.capitalize()} {base_desc} — seamless 4K loop"
     kws = []
@@ -193,9 +262,11 @@ def gen_for_clip(cfg, clip: dict) -> dict:
     # apply per-kind vocabulary (image/vector need their own descriptors)
     kv_title, kv_kws = KIND_VOCAB.get(kind, ([], []))
     n = cfg.get("metadata.keywords_count", None) or (49 if kind == "vector" else 25)
-    # kind vocab is PREPENDED (most relevant first) so it survives truncation
+    # desc-driven assets: content words are MOST relevant, so they go first;
+    # otherwise kind vocab is PREPENDED so it survives truncation
+    _, desc_words = _base_for(clip) if clip.get("desc") else ([], [])
     merged: list[str] = []
-    for k in kv_kws + kws:
+    for k in desc_words + kv_kws + kws:
         if k not in merged:
             merged.append(k)
     kws = merged
@@ -244,6 +315,7 @@ def gen_for_asset(cfg, asset) -> dict:
         "is_ai": asset.is_ai,
         "sketch": asset.sketch or "particles",
         "seed": asset.seed or 0,
+        "desc": getattr(asset, "desc", None),
     }
     return gen_for_clip(cfg, clip)
 
@@ -253,7 +325,13 @@ def build_per_kind_csvs(cfg, registry, batch_dir: Path) -> dict[str, Path]:
 
     Only SELLABLE assets are written; blocked (download) assets are skipped and
     must have already been rejected upstream. Returns {kind: csv_path}.
+
+    Before generating, assets WITHOUT a user description are auto-described by
+    the vision model (it looks at the actual content), so titles/keywords match
+    what was uploaded even when the user typed nothing.
     """
+    from . import vision as vision_mod  # lazy: avoid import cycle at module load
+    vision_mod.ensure_descs(cfg, registry, batch_dir)
     written: dict[str, Path] = {}
     by_kind: dict[str, list] = {}
     for a in registry.sellable():
