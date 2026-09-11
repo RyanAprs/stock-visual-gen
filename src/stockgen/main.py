@@ -1,6 +1,7 @@
 """stockgen CLI — render original clips + Adobe Stock CSV metadata."""
 from __future__ import annotations
 import argparse
+import sys
 import json
 from datetime import datetime
 from pathlib import Path
@@ -431,11 +432,141 @@ def cmd_vector(args) -> int:
     return 0
 
 
+def _menu_prompt(prompt, default=""):
+    import sys
+    if not sys.stdin.isatty():
+        return default
+    try:
+        raw = input(f"{prompt} ").strip()
+    except EOFError:
+        return default
+    return raw or default
+
+
+def cmd_menu(args) -> int:
+    """Interactive terminal menu — pick an action, answer prompts, run it."""
+    import sys
+    from types import SimpleNamespace
+    if not sys.stdin.isatty():
+        console.print("[red]menu needs an interactive terminal[/]"); return 2
+
+    actions = [
+        ("video",     "Render original 4K motion clips (p5.js)"),
+        ("image",     "Render original high-res images (jpg/png/webp)"),
+        ("vector",    "Generate original flat-vector art (SVG+EPS)"),
+        ("ingest",    "Ingest AI video (Google Flow/Veo, paid plan)"),
+        ("upscale",   "Upscale a video/image to 4K"),
+        ("vectorize", "Trace an original raster to SVG+EPS"),
+        ("metadata",  "Build Adobe Stock CSV(s) for a batch"),
+        ("assets",    "List/validate a batch's IP-source registry"),
+        ("doctor",    "Check environment"),
+        ("quit",      "Exit"),
+    ]
+    while True:
+        console.print("\n[bold cyan]stockgen[/] — pick an action:")
+        for i, (key, desc) in enumerate(actions, 1):
+            console.print(f"  [bold]{i:>2}[/]. [green]{key:<10}[/] {desc}")
+        choice = _menu_prompt("\n>").lower()
+        if choice in ("q", "quit", "0", ""):
+            console.print("bye"); return 0
+        sel = None
+        if choice.isdigit() and 1 <= int(choice) <= len(actions):
+            sel = actions[int(choice) - 1][0]
+        else:
+            sel = next((k for k, _ in actions if k == choice), None)
+        if sel is None:
+            console.print("[yellow]invalid choice[/]"); continue
+        if sel == "quit":
+            console.print("bye"); return 0
+
+        ns = SimpleNamespace(config=args.config)
+        try:
+            if sel == "doctor":
+                cmd_doctor(ns)
+            elif sel == "assets":
+                ns.batch = _menu_prompt("batch name (blank=newest):") or None
+                cmd_assets(ns)
+            elif sel == "metadata":
+                ns.batch = _menu_prompt("batch name (blank=newest):") or None
+                ns.kind = _menu_prompt("kind [all/video/image/vector] (blank=all):") or "all"
+                cmd_metadata(ns)
+            elif sel in ("video", "image", "vector"):
+                _menu_generate(sel, ns)
+            elif sel == "ingest":
+                ns.path = _menu_prompt("path to AI video file/dir:")
+                ns.source = assets_mod.SOURCE_AI_GOOGLEFLOW
+                ns.batch = _menu_prompt("batch name (blank=new):") or None
+                if ns.path:
+                    cmd_ingest(ns)
+            elif sel == "upscale":
+                ns.path = _menu_prompt("path to video/image:")
+                ns.source = _menu_prompt("source [original/ai_googleflow]:") or "original"
+                ns.to = "4k"; ns.out = None
+                if ns.path:
+                    cmd_upscale(ns)
+            elif sel == "vectorize":
+                ns.path = _menu_prompt("path to original raster:")
+                ns.source = _menu_prompt("source [original/ai_googleflow]:") or "original"
+                ns.engine = _menu_prompt("engine [vtracer/potrace] (blank=vtracer):") or "vtracer"
+                ns.colors = 8
+                ns.batch = _menu_prompt("batch name (blank=new):") or None
+                if ns.path:
+                    cmd_vectorize(ns)
+        except Exception as e:
+            console.print(f"[red]✗ {e}[/]")
+
+
+def _menu_generate(kind, ns):
+    """Prompt shared render params for video/image/vector and dispatch."""
+    from types import SimpleNamespace
+    ns.batch = _menu_prompt("batch name (blank=new timestamp):") or None
+    ns.seed_start = int(_menu_prompt("seed start (blank=100):") or "100")
+    if kind == "vector":
+        ns.style = _menu_prompt("style [all/" + "/".join(vector_mod.VECTOR_STYLES) + "] (blank=all):") or "all"
+        ns.count = int(_menu_prompt("count per style (blank=3):") or "3")
+        cmd_vector(ns)
+    elif kind == "image":
+        ns.sketch = _menu_prompt("sketch [all/particles/...] (blank=all):") or "all"
+        ns.count = int(_menu_prompt("count per sketch (blank=3):") or "3")
+        ns.aspect = _menu_prompt("aspect [16:9/9:16] (blank=16:9):") or "16:9"
+        ns.format = _menu_prompt("format [jpg/png/webp] (blank=jpg):") or "jpg"
+        cmd_image(ns)
+    else:  # video
+        ns.sketch = _menu_prompt("sketch [all/particles/...] (blank=all):") or "all"
+        ns.count = int(_menu_prompt("count per sketch (blank=3):") or "3")
+        ns.aspect = _menu_prompt("aspect [16:9/9:16] (blank=16:9):") or "16:9"
+        cmd_render(ns)
+
+
+def _bootstrap_libcairo():
+    """Set DYLD_FALLBACK_LIBRARY_PATH once at startup so cairocffi finds brew libcairo.
+
+    Must run BEFORE any cairo import and BEFORE interactive prompts, so the single
+    re-exec happens at launch (not mid-menu, which would lose user input)."""
+    import os
+    if os.environ.get("_STOCKGEN_CAIRO_REEXEC"):
+        return
+    try:
+        import cairosvg  # noqa: F401
+        return  # already loadable, no re-exec needed
+    except OSError:
+        extra = os.pathsep.join(d for d in ("/opt/homebrew/lib", "/usr/local/lib")
+                                if os.path.isdir(d))
+        cur = os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+        os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = os.pathsep.join(p for p in (extra, cur) if p)
+        os.environ["_STOCKGEN_CAIRO_REEXEC"] = "1"
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception:
+        return  # cairo optional; vector cmds will report if truly unavailable
+
+
 def main(argv=None) -> int:
+    if argv is None:
+        _bootstrap_libcairo()
     p = argparse.ArgumentParser(prog="stockgen",
                                 description="Generate ORIGINAL motion-graphics clips + Adobe Stock CSV")
     p.add_argument("--config", default=None)
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=False)
 
     sub.add_parser("doctor", help="check environment").set_defaults(func=cmd_doctor)
 
@@ -511,7 +642,12 @@ def main(argv=None) -> int:
     vz.add_argument("--batch", default=None, help="batch dir name (default: timestamp)")
     vz.set_defaults(func=cmd_vectorize)
 
+    sub.add_parser("menu", help="interactive terminal menu (pick an action)").set_defaults(func=cmd_menu)
+
     args = p.parse_args(argv)
+    if not getattr(args, "func", None):
+        # no subcommand -> launch interactive menu
+        args.func = cmd_menu
     return args.func(args)
 
 
