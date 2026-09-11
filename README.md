@@ -32,7 +32,7 @@ output/<batch>/
 
 ## Setup
 ```bash
-cd /Users/mac/Code/stock-visual-gen
+cd /stock-visual-gen
 uv venv --python 3.11 && uv pip install -e .
 npm install                      # puppeteer for headless render
 stockgen doctor

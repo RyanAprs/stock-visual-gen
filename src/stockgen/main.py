@@ -16,6 +16,7 @@ from . import assets as assets_mod
 from . import vector as vector_mod
 from . import image as image_mod
 from . import ingest as ingest_mod
+from . import upscale as upscale_mod
 
 console = Console()
 
@@ -279,6 +280,36 @@ def cmd_assets(args) -> int:
     return 0
 
 
+def cmd_upscale(args) -> int:
+    """Upscale a video/image to 4K. GUARDRAIL: original/ai sources only."""
+    cfg = Config.load(args.config)
+    src = Path(args.path).expanduser()
+    if not src.exists():
+        console.print(f"[red]path not found: {src}[/]"); return 2
+    # enforce IP guardrail via the source tag
+    try:
+        upscale_mod._assert_source_ok(args.source)
+    except assets_mod.GuardrailError as e:
+        console.print(f"[red]✗ {e}[/]"); return 1
+    vid_exts = {".mp4", ".mov", ".m4v", ".webm"}
+    img_exts = {".jpg", ".jpeg", ".png", ".webp"}
+    ext = src.suffix.lower()
+    out = args.out and Path(args.out).expanduser() or src.with_name(f"{src.stem}_4k{ext}")
+    try:
+        if ext in vid_exts:
+            info = upscale_mod.upscale_video(src, out, args.to)
+        elif ext in img_exts:
+            info = upscale_mod.upscale_image(src, out, args.to)
+        else:
+            console.print(f"[red]unsupported file type: {ext}[/]"); return 2
+    except Exception as e:
+        console.print(f"[red]✗ {e}[/]"); return 3
+    console.print(f"[green]✓ upscaled[/] {info['from']} → {info['to']}"
+                  + (f"  ({info['engine']})" if info.get("engine") else "")
+                  + f"  → {out}")
+    return 0
+
+
 def cmd_ingest(args) -> int:
     """Ingest external AI video (Google Flow/Veo, paid plan) into a batch."""
     cfg = Config.load(args.config)
@@ -428,6 +459,15 @@ def main(argv=None) -> int:
                      help="IP source tag (default: ai_googleflow)")
     ing.add_argument("--batch", default=None, help="batch dir name (default: timestamp)")
     ing.set_defaults(func=cmd_ingest)
+
+    ups = sub.add_parser("upscale", help="upscale a video/image to 4K (original/ai only)")
+    ups.add_argument("path", help="video or image file to upscale")
+    ups.add_argument("--source", required=True, choices=sorted(assets_mod.KNOWN_SOURCES),
+                     help="IP source of the file (download is refused)")
+    ups.add_argument("--to", default="4k", choices=sorted(upscale_mod.TARGETS),
+                     help="target size (default 4k)")
+    ups.add_argument("--out", default=None, help="output path (default: <stem>_4k.<ext>)")
+    ups.set_defaults(func=cmd_upscale)
 
     args = p.parse_args(argv)
     return args.func(args)

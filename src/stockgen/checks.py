@@ -35,6 +35,20 @@ def doctor(cfg) -> list[tuple[str, bool, str]]:
     check("sketches", bool(sketches), f"{len(sketches)} found: " +
           ", ".join(s.stem for s in sketches))
 
+    # cairosvg (vector SVG->EPS) — import may need brew libcairo via DYLD
+    try:
+        import os as _os
+        _os.environ.setdefault("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib:/usr/local/lib")
+        import cairosvg  # noqa: F401
+        check("cairosvg", True, "vector SVG->EPS ready")
+    except Exception as e:
+        check("cairosvg", False, f"vector export unavailable: {str(e)[:50]}")
+
+    # realesrgan (optional AI image upscaler) — lanczos fallback always works
+    resr = shutil.which("realesrgan-ncnn-vulkan")
+    check("realesrgan", bool(resr), resr + " (AI upscale)" if resr
+          else "optional — using ffmpeg/Pillow lanczos fallback")
+
     # metadata provider
     prov = cfg.get("metadata.provider", "ollama")
     if prov == "ollama":
