@@ -13,12 +13,15 @@ render:
 # ---- Metadata (Adobe Stock CSV) ----
 metadata:
   provider: "ollama"             # ollama | groq | rule
-  ollama_model: "qwen3:8b"
+  ollama_model: "llama3.2:3b"
   ollama_host: "http://localhost:11434"
-  keywords_count: 25             # Adobe Stock allows up to 49; 25-40 is the sweet spot
+  vision_model: "moondream"      # AI Vision: small+free local model for auto-describe
+  auto_describe: true            # Smart AI Vision: look at each asset to write title/keywords
+  keywords_count: 42             # 30-50 high-ranking SEO keywords per asset (Adobe max 49)
   # Adobe Stock category IDs: https://helpx.adobe.com/stock/contributor/help/... 
   # 8 = Backgrounds/Textures, 11 = Graphic Resources
   default_category: 8
+  seo_boost: true                # append high-search-volume stock terms per kind
 
 # ---- Clip loop ----
 loop: true                       # render seamless loops (stock buyers prefer loops)

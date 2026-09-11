@@ -6,8 +6,9 @@ dir under output/ and REGISTERED in that batch's registry, so the same
 metadata pipeline used by the CLI can produce Adobe Stock CSV(s) from the UI.
 
 Endpoints:
-  POST /api/upscale    {name,data,source,to}      -> registers image, before/after urls
-  POST /api/vectorize  {name,data,source,engine}  -> registers vector, before/preview + svg/eps
+  POST /api/upscale    {name,data,source,to}      -> single image upscale
+  POST /api/vectorize  {name,data,source,engine}  -> single raster->vector
+  POST /api/batch      {files:[{name,data,desc}],source,kind,engine,to} -> batch (puluhan aset)
   GET  /api/registry                              -> current batch assets
   POST /api/metadata                              -> build per-kind CSV(s) + checklist
   GET  /files/<path>                              -> serve a file inside the batch dir
@@ -85,17 +86,45 @@ INDEX_HTML = r"""<!doctype html>
  .info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin:12px 0}
  .info-grid>div{background:var(--card);padding:8px 12px;border-radius:8px}
  .info-grid .k{font-size:11px;color:var(--mut)} .info-grid .v{font-size:15px;font-weight:600}
+ .queue{margin-top:14px}
+ .qrow{display:flex;gap:10px;align-items:center;padding:8px 10px;border-bottom:1px solid #232733;font-size:13px}
+ .qrow .qname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .qrow .qkind{color:var(--mut);font-size:11px;min-width:52px;text-align:center}
+ .qrow .qst{font-size:11px;padding:2px 8px;border-radius:10px;min-width:68px;text-align:center}
+ .qst-wait{background:#1a1d24;color:var(--mut)} .qst-run{background:#12202e;color:var(--acc)}
+ .qst-ok{background:#12321f;color:var(--ok)} .qst-err{background:#2a1210;color:var(--err)}
+ .bar{height:4px;background:#1e2330;border-radius:2px;overflow:hidden;margin:8px 0 14px}
+ .bar>i{display:block;height:100%;background:var(--acc);width:0;transition:.3s}
+
 </style></head><body>
 <header><h1>stockgen</h1><span class="batch" id="batchName">…</span>
  <div class="tabs">
-   <div class="tab on" data-t="upscale">Upscale → 4K</div>
+   <div class="tab on" data-t="batch">📦 Batch</div>
+   <div class="tab" data-t="upscale">Upscale → 4K</div>
    <div class="tab" data-t="vectorize">Raster → SVG</div>
    <div class="tab" data-t="video">Video</div>
    <div class="tab" data-t="export">Metadata / Export</div>
  </div>
 </header>
 <main>
- <div id="work">
+ <div id="batchPane">
+  <div id="batchDrop" class="drop">Drag &amp; drop <b>puluhan aset</b> sekaligus di sini, atau klik untuk pilih<br>
+    <small>PNG / JPG / WEBP / MP4 / MOV — bisa campur image + video</small>
+    <input id="batchFile" type="file" accept="image/*,video/*" hidden multiple></div>
+  <div class="row">
+    <label>Kind: <select id="batchKind"><option value="auto">auto (by file type)</option><option value="image">image (upscale → 4K)</option><option value="video">video (native prepare)</option><option value="vector">vector (raster → SVG)</option></select></label>
+    <label>Source: <select id="batchSource"><option value="original">original (my work)</option><option value="ai_googleflow">ai_googleflow (paid plan)</option></select></label>
+    <span id="batchOpts"></span>
+    <button id="batchGo" class="go" disabled>Proses batch (1 klik)</button>
+    <button id="batchClear" style="background:#2a1210;color:var(--err);border-color:#3a2020" disabled>Clear</button>
+  </div>
+  <div id="batchStatus" class="status">Belum ada file — drop puluhan aset sekaligus, lalu klik Proses batch.</div>
+  <div class="bar" style="display:none" id="batchBar"><i id="batchBarFill"></i></div>
+  <div id="batchQueue" class="queue"></div>
+  <div id="batchLinks" class="links meta"></div>
+ </div>
+
+ <div id="work" class="hide">
   <div id="drop" class="drop">Drag &amp; drop an image here, or click to choose<br>
     <small>PNG / JPG / WEBP</small><input id="file" type="file" accept="image/*" hidden></div>
   <div class="row">
@@ -153,18 +182,23 @@ INDEX_HTML = r"""<!doctype html>
  </div>
 </main>
 <script>
-let TAB="upscale", FILE=null, VFILE=null;
+let TAB="batch", FILE=null, VFILE=null, BATCH_FILES=[];
 const $=id=>document.getElementById(id);
 const drop=$("drop"),file=$("file"),go=$("go"),status=$("status");
 const vDrop=$("vDrop"),vFile=$("vFile"),vUp=$("vUp"),vPrep=$("vPrep"),vStatus=$("vStatus");
+const batchDrop=$("batchDrop"),batchFile=$("batchFile"),batchGo=$("batchGo"),batchClear=$("batchClear"),batchStatus=$("batchStatus");
 fetch("/api/registry").then(r=>r.json()).then(j=>{$("batchName").textContent="batch: "+j.batch;});
+function isImage(n){return /\.(png|jpg|jpeg|webp)$/i.test(n);}
+function isVideo(n){return /\.(mp4|mov|webm|m4v)$/i.test(n);}
+function kindFor(name, forced){if(forced && forced!=="auto") return forced; if(isVideo(name)) return "video"; if(isImage(name)) return "image"; return "image";}
 function setTab(t){TAB=t;document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on",x.dataset.t===t));
-  const ex=t==="export",vid=t==="video";
-  $("work").classList.toggle("hide",ex||vid);$("exportPane").classList.toggle("hide",!ex);
-  $("videoPane").classList.toggle("hide",!vid);
+  const ex=t==="export",vid=t==="video",up=t==="upscale",vec=t==="vectorize",bat=t==="batch";
+  $("work").classList.toggle("hide",ex||vid||bat);$("exportPane").classList.toggle("hide",!ex);
+  $("videoPane").classList.toggle("hide",!vid);$("batchPane").classList.toggle("hide",!bat);
   if(ex){loadReg();return;}
   if(vid)return;
-  $("opts").innerHTML = t==="vectorize"
+  if(bat){updateBatchOpts();return;}
+  $("opts").innerHTML = vec
     ? 'Engine: <select id="engine"><option value="vtracer">vtracer (color)</option><option value="potrace">potrace (mono)</option></select>'
     : 'Target: <select id="to"><option value="4k">4K</option></select>';
   resetCmp();}
@@ -266,7 +300,75 @@ vPrep.onclick=async()=>{if(!VFILE)return;vPrep.disabled=true;vUp.disabled=true;v
       vStatus.className="status ok";vStatus.textContent="Done — "+j.meta+" · submit THIS file to Adobe.";
     }catch(e){vStatus.className="status err";vStatus.textContent="✗ "+e.message}
     vPrep.disabled=false;vUp.disabled=false;};r.readAsDataURL(VFILE);};
-setTab("upscale");
+/* ---- BATCH TAB (puluhan aset sekaligus) ---- */
+function updateBatchOpts(){
+  const k=$("batchKind").value;
+  if(k==="vector") $("batchOpts").innerHTML='Engine: <select id="batchEngine"><option value="vtracer">vtracer (color)</option><option value="potrace">potrace (mono)</option></select>';
+  else if(k==="image") $("batchOpts").innerHTML='Target: <select id="batchTo"><option value="4k">4K</option></select>';
+  else $("batchOpts").innerHTML='<span style="color:var(--mut);font-size:12px">auto: image→4K, video→native, raster dipilih → SVG</span>';
+}
+$("batchKind").addEventListener("change", updateBatchOpts);
+function renderQueue(){
+  const q=$("batchQueue"), n=BATCH_FILES.length;
+  if(!n){q.innerHTML="";batchStatus.textContent="Belum ada file — drop puluhan aset sekaligus, lalu klik Proses batch.";batchStatus.className="status";batchGo.disabled=true;batchClear.disabled=true;$("batchBar").style.display="none";return;}
+  batchGo.disabled=false;batchClear.disabled=false;
+  batchStatus.textContent=n+" file siap — klik Proses batch untuk proses semua sekaligus.";batchStatus.className="status";
+  q.innerHTML=BATCH_FILES.map((f,i)=>{
+    const st=f._st||"wait", label={wait:"menunggu",run:"proses…",ok:"✓ selesai",err:"✗ gagal"}[st]||st;
+    const cls={wait:"qst-wait",run:"qst-run",ok:"qst-ok",err:"qst-err"}[st]||"qst-wait";
+    const kind=kindFor(f.name,$("batchKind").value);
+    const err=f._err?` title="${f._err.replace(/\"/g,'&quot;')}"`:"";
+    return `<div class="qrow" data-i="${i}"><span class="qname">${f.name}</span><span class="qkind">${kind}</span><span class="qst ${cls}"${err}>${label}</span></div>`;
+  }).join("");
+}
+function enqueueFiles(list){
+  for(const f of list){
+    if(!isImage(f.name) && !isVideo(f.name)){continue;}
+    const r=new FileReader();
+    r.onload=()=>{BATCH_FILES.push({name:f.name,data:r.result,_st:"wait"});renderQueue();};
+    r.readAsDataURL(f);
+  }
+  // render after a short delay for first file
+  setTimeout(renderQueue, 80);
+}
+batchDrop.onclick=()=>batchFile.click();
+["dragover","dragenter"].forEach(e=>batchDrop.addEventListener(e,ev=>{ev.preventDefault();batchDrop.classList.add("hot")}));
+["dragleave","drop"].forEach(e=>batchDrop.addEventListener(e,ev=>{ev.preventDefault();batchDrop.classList.remove("hot")}));
+batchDrop.addEventListener("drop",ev=>{if(ev.dataTransfer.files.length) enqueueFiles([...ev.dataTransfer.files]);});
+batchFile.addEventListener("change",()=>{if(batchFile.files.length) enqueueFiles([...batchFile.files]); batchFile.value="";});
+batchClear.onclick=()=>{BATCH_FILES=[];renderQueue();$("batchLinks").innerHTML="";$("batchBar").style.display="none";};
+batchGo.onclick=async()=>{
+  if(!BATCH_FILES.length) return;
+  batchGo.disabled=true;batchClear.disabled=true;batchStatus.textContent="Memproses "+BATCH_FILES.length+" aset… jangan tutup tab ini.";
+  batchStatus.className="status";$("batchBar").style.display="block";$("batchBarFill").style.width="0%";$("batchLinks").innerHTML="";
+  const body={files: BATCH_FILES.map(f=>({name:f.name,data:f.data})), source:$("batchSource").value, kind:$("batchKind").value};
+  const ek=$("batchEngine"); if(ek) body.engine=ek.value;
+  const tk=$("batchTo"); if(tk) body.to=tk.value;
+  // optimistic: mark all as run
+  BATCH_FILES.forEach(f=>f._st="run");renderQueue();
+  try{
+    const res=await fetch("/api/batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const j=await res.json();
+    if(!res.ok) throw new Error(j.error||("HTTP "+res.status));
+    // update per-file status from server response
+    (j.results||[]).forEach((r,i)=>{if(BATCH_FILES[i]){BATCH_FILES[i]._st=r.ok?"ok":"err";BATCH_FILES[i]._err=r.error||"";}});
+    renderQueue();
+    $("batchBarFill").style.width="100%";
+    const ok=(j.results||[]).filter(r=>r.ok).length, fail=j.results.length-ok;
+    batchStatus.className=fail?"status err":"status ok";
+    batchStatus.textContent="Selesai: "+ok+" berhasil, "+fail+" gagal dari "+j.results.length+" aset. "+(fail?"Cek yang gagal — lalu buka Metadata / Export.":"Buka Metadata / Export untuk generate CSV.");
+    // keep successful files in queue for visibility, allow re-run of failed
+    if(ok && !fail) BATCH_FILES=[];
+    else BATCH_FILES=BATCH_FILES.filter(f=>f._st==="err");
+    let links=""; if(j.csv) for(const [k,u] of Object.entries(j.csv)) links+=`<a href="${u}" download>metadata_${k}.csv</a>`;
+    if(j.checklist_url) links+=`<a href="${j.checklist_url}" download>upload_checklist.txt</a>`;
+    if(links) links+='<span style="color:var(--mut);font-size:12px"> — atau buka tab Metadata / Export untuk review</span>';
+    $("batchLinks").innerHTML=links;
+    fetch("/api/registry").then(r=>r.json()).then(j=>{$("batchName").textContent="batch: "+j.batch;});
+  }catch(e){batchStatus.className="status err";batchStatus.textContent="✗ "+e.message; BATCH_FILES.forEach(f=>{if(f._st==="run") f._st="err";});renderQueue();}
+  batchGo.disabled=false;batchClear.disabled=false;
+};
+setTab("batch");
 </script></body></html>"""
 
 
@@ -311,7 +413,7 @@ def _make_handler():
         def do_POST(self):
             body = {}
             if self.path in ("/api/upscale", "/api/vectorize", "/api/video_probe", "/api/video_upscale",
-                               "/api/video_prepare"):
+                               "/api/video_prepare", "/api/batch"):
                 try:
                     n = int(self.headers.get("Content-Length", 0))
                     body = json.loads(self.rfile.read(n) or b"{}")
@@ -328,6 +430,8 @@ def _make_handler():
                     return self._send(200, json.dumps(self._video_upscale(body)))
                 if self.path == "/api/video_prepare":
                     return self._send(200, json.dumps(self._video_prepare(body)))
+                if self.path == "/api/batch":
+                    return self._send(200, json.dumps(self._batch(body)))
                 if self.path == "/api/metadata":
                     return self._send(200, json.dumps(self._metadata()))
                 return self._send(404, json.dumps({"error": "unknown endpoint"}))
@@ -433,6 +537,96 @@ def _make_handler():
             reg.save()
             return {"after_url": f"/files/video/{out.name}",
                     "meta": f"native {info['to']} (CRF14)  · added as video/{out.name}"}
+
+        def _batch(self, req):
+            """Batch: process puluhan aset sekaligus — one click, mixed image+video+vector.
+
+            req = {files:[{name,data,desc?}], source, kind:auto|image|video|vector, engine?, to?}
+            Returns {results:[{name,kind,ok,file?,error?}], total, csv?, checklist_url?}
+            Each file is processed sequentially; one failure doesn't abort the rest.
+            """
+            source = req.get("source", "original")
+            try:
+                upscale_mod._assert_source_ok(source)
+            except assets_mod.GuardrailError as e:
+                return {"error": str(e), "results": []}
+            files = req.get("files") or []
+            if not files:
+                return {"error": "no files in batch (need files:[{name,data}])", "results": []}
+            if len(files) > 100:
+                return {"error": f"batch too large: {len(files)} files (max 100 per batch)", "results": []}
+            kind_forced = (req.get("kind") or "auto").strip().lower()
+            engine = req.get("engine", "vtracer")
+            to = req.get("to", "4k")
+            is_ai = source in assets_mod.AI_SOURCES
+            results = []
+            for item in files:
+                name = (item.get("name") or "unnamed").strip()
+                data = item.get("data") or ""
+                desc = (item.get("desc") or "").strip() or meta_mod.desc_from_filename(name)
+                if not data:
+                    results.append({"name": name, "ok": False, "error": "missing data"})
+                    continue
+                # detect kind
+                ext = Path(name).suffix.lower()
+                if kind_forced == "vector":
+                    kind = assets_mod.KIND_VECTOR
+                elif kind_forced == "image":
+                    kind = assets_mod.KIND_IMAGE
+                elif kind_forced == "video":
+                    kind = assets_mod.KIND_VIDEO
+                else:  # auto
+                    if ext in (".mp4", ".mov", ".m4v", ".webm"):
+                        kind = assets_mod.KIND_VIDEO
+                    elif ext in (".png", ".jpg", ".jpeg", ".webp", ".svg"):
+                        # svg input that's forced auto but looks like vector source -> image unless explicitly vector
+                        kind = assets_mod.KIND_IMAGE
+                    else:
+                        kind = assets_mod.KIND_IMAGE
+                try:
+                    reg = assets_mod.Registry.load(_BATCH)
+                    idx = len(reg.of_kind(kind)) + 1
+                    src = _b64_to_file(data, _BATCH / "_src" / ("in_" + Path(name).name))
+                    if kind == assets_mod.KIND_VIDEO:
+                        out = _BATCH / "video" / f"vid_{idx:03d}_native.mp4"
+                        info = upscale_mod.prepare_native_video(src, out)
+                        reg.add(assets_mod.Asset(
+                            file=f"video/{out.name}", kind=kind, source=source,
+                            is_ai=is_ai, sketch="auto", seed=idx, desc=desc))
+                        reg.save()
+                        results.append({"name": name, "kind": kind, "ok": True, "file": f"video/{out.name}", "meta": f"native {info['to']}"})
+                    elif kind == assets_mod.KIND_VECTOR:
+                        info = vectorize_mod.vectorize(src, _BATCH / "vector", idx, source, engine=engine)
+                        reg.add(assets_mod.Asset(
+                            file=f"vector/{info['file']}", kind=kind, source=source,
+                            sketch="icons", seed=idx, desc=desc))
+                        reg.save()
+                        results.append({"name": name, "kind": kind, "ok": True, "file": f"vector/{info['file']}", "meta": f"traced {info['engine']}"})
+                    else:  # image -> upscale to 4K
+                        out = _BATCH / "image" / f"img_{idx:03d}.jpg"
+                        info = upscale_mod.upscale_image(src, out, to)
+                        reg.add(assets_mod.Asset(
+                            file=f"image/{out.name}", kind=kind, source=source,
+                            sketch="auto", seed=idx, desc=desc))
+                        reg.save()
+                        results.append({"name": name, "kind": kind, "ok": True, "file": f"image/{out.name}", "meta": f"{info['from']} -> {info['to']}"})
+                except Exception as e:
+                    results.append({"name": name, "kind": kind, "ok": False, "error": str(e)[:300]})
+            # auto-generate CSV + checklist if any succeeded
+            csv_map = {}
+            checklist_url = None
+            if any(r["ok"] for r in results):
+                try:
+                    reg = assets_mod.Registry.load(_BATCH)
+                    written = meta_mod.build_per_kind_csvs(_CFG, reg, _BATCH)
+                    from .main import _write_upload_checklist
+                    _write_upload_checklist(_BATCH, reg)
+                    csv_map = {k: f"/files/{p.name}" for k, p in written.items()}
+                    checklist_url = "/files/upload_checklist.txt"
+                except Exception as e:
+                    # CSV failure shouldn't hide batch results
+                    results.append({"name": "_csv", "ok": False, "error": f"CSV build failed: {e}"})
+            return {"total": len(files), "results": results, "csv": csv_map, "checklist_url": checklist_url}
 
         def _registry(self):
             reg = assets_mod.Registry.load(_BATCH)

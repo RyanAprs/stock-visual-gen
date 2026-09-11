@@ -29,6 +29,41 @@ FORBIDDEN_WORDS = {
 }
 
 # per-kind vocabulary appended to titles/keywords so image & vector read right.
+# High-ranking SEO terms per kind — trending on Adobe Stock search (2025-2026).
+# Appended after content-specific keywords so the long-tail stays highly ranked.
+SEO_BOOST = {
+    "video": [
+        "stock", "background", "loop", "seamless", "abstract", "motion",
+        "4k", "uhd", "footage", "animation", "backdrop", "wallpaper",
+        "technology", "modern", "digital", "cinematic", "presentation",
+        "title", "intro", "transition", "overlay",
+        # long-tail high-search volume (video)
+        "business", "corporate", "nature", "space", "light", "energy",
+        "dynamic", "render", "creative", "art", "vfx", "effect",
+        "youtube", "social media", "advertising", "promo",
+    ],
+    "image": [
+        "background", "wallpaper", "texture", "design", "abstract",
+        "graphic", "digital", "modern", "art", "pattern", "colorful",
+        "high resolution", "backdrop", "banner", "poster", "cover",
+        "template", "creative", "vibrant", "space",
+        # long-tail high-search volume (image)
+        "business", "corporate", "nature", "bright", "light", "gradient",
+        "illustration", "decorative", "stylish", "elegant", "trendy",
+        "social media", "website", "header", "flyer", "brochure",
+    ],
+    "vector": [
+        "vector", "illustration", "icon", "flat", "design", "graphic",
+        "isolated", "symbol", "sign", "element", "modern", "minimal",
+        "template", "scalable", "print", "web", "infographic",
+        "concept", "business", "set",
+        # long-tail high-search volume (vector)
+        "logo", "badge", "emblem", "shape", "geometric", "abstract",
+        "corporate", "branding", "identity", "marketing", "app",
+        "ui", "interface", "background", "pattern", "decorative",
+    ],
+}
+
 KIND_VOCAB = {
     "video":  ([], ["4k", "uhd", "motion", "loop", "seamless", "footage", "animation"]),
     "image":  ([], ["high resolution", "background", "graphic", "digital", "wallpaper"]),
@@ -97,8 +132,9 @@ def _ollama(cfg, prompt: str) -> str | None:
 def _gen_llm(cfg, clip: dict) -> tuple[str, list[str]] | None:
     base_desc, base_kw = _base_for(clip)
     pal = PALETTE_WORDS.get(clip["seed"] % 5, [])
-    n = cfg.get("metadata.keywords_count", 25)
+    n = cfg.get("metadata.keywords_count", 42)
     kind = clip.get("kind", "video")
+    seo = SEO_BOOST.get(kind, []) if cfg.get("metadata.seo_boost", True) else []
     if clip.get("desc"):
         # described content: stick to the description ONLY — the model must
         # not invent scenery (no palette/sketch vocab leaking into titles).
@@ -211,21 +247,21 @@ def _normalize_keywords(raw: list[str], backfill: list[str], n: int) -> list[str
 def _gen_rule(cfg, clip: dict) -> tuple[str, list[str]]:
     base_desc, base_kw = _base_for(clip)
     pal = PALETTE_WORDS.get(clip["seed"] % 5, [])
-    n = cfg.get("metadata.keywords_count", 25)
+    n = cfg.get("metadata.keywords_count", 42)
+    kind = clip.get("kind", "video")
+    seo = SEO_BOOST.get(kind, []) if cfg.get("metadata.seo_boost", True) else []
     if clip.get("desc"):
-        # user-described content: title IS the description (no color prefix)
+        # user-described / vision-described content: title IS the description
         title = f"{base_desc.strip().capitalize()} — seamless 4K loop"
         kws = []
-        for k in base_kw + ["4k", "uhd", "animation", "backdrop", "creative",
-                            "modern", "smooth", "vibrant", "screensaver", "vj"]:
+        for k in base_kw + seo + ["backdrop", "creative", "smooth", "vibrant"]:
             if k not in kws:
                 kws.append(k)
         return title, kws[:n]
     color = pal[0] if pal else "abstract"
     title = f"{color.capitalize()} {base_desc} — seamless 4K loop"
     kws = []
-    for k in base_kw + pal + ["4k", "uhd", "animation", "backdrop", "creative",
-                              "modern", "smooth", "vibrant", "screensaver", "vj"]:
+    for k in base_kw + pal + seo + ["backdrop", "creative", "smooth", "vibrant"]:
         if k not in kws:
             kws.append(k)
     return title, kws[:n]
@@ -261,7 +297,11 @@ def gen_for_clip(cfg, clip: dict) -> dict:
 
     # apply per-kind vocabulary (image/vector need their own descriptors)
     kv_title, kv_kws = KIND_VOCAB.get(kind, ([], []))
-    n = cfg.get("metadata.keywords_count", None) or (49 if kind == "vector" else 25)
+    seo = SEO_BOOST.get(kind, []) if cfg.get("metadata.seo_boost", True) else []
+    # target 30-50: default 42, vector 45, Adobe max 49
+    default_n = 45 if kind == "vector" else 42
+    n = cfg.get("metadata.keywords_count", None) or default_n
+    n = max(30, min(49, n))  # clamp to Adobe Stock limits
     # desc-driven assets: content words are MOST relevant, so they go first;
     # otherwise kind vocab is PREPENDED so it survives truncation
     _, desc_words = _base_for(clip) if clip.get("desc") else ([], [])
@@ -270,6 +310,12 @@ def gen_for_clip(cfg, clip: dict) -> dict:
         if k not in merged:
             merged.append(k)
     kws = merged
+    # backfill with high-ranking SEO terms until we hit n (guaranteed 30-50)
+    for k in seo:
+        if len(kws) >= n:
+            break
+        if k not in kws:
+            kws.append(k)
     # drop video-only descriptors that make no sense on stills/vectors
     if kind in ("image", "vector"):
         kws = [k for k in kws if k not in {"4k", "uhd", "loop", "seamless", "motion",
@@ -307,6 +353,11 @@ def write_csv(rows: list[dict], out_csv: Path) -> Path:
     return out_csv
 
 
+def write_combined_csv(rows: list[dict], out_csv: Path) -> Path:
+    """Write a combined CSV with all kinds — for single-upload convenience."""
+    return write_csv(rows, out_csv)
+
+
 def gen_for_asset(cfg, asset) -> dict:
     """Build a metadata row from an assets.Asset (registry-driven, kind/AI aware)."""
     clip = {
@@ -321,10 +372,14 @@ def gen_for_asset(cfg, asset) -> dict:
 
 
 def build_per_kind_csvs(cfg, registry, batch_dir: Path) -> dict[str, Path]:
-    """Generate one Adobe Stock CSV per asset kind present in the registry.
+    """Generate one Adobe Stock CSV per asset kind present in the registry + a combined CSV.
 
     Only SELLABLE assets are written; blocked (download) assets are skipped and
-    must have already been rejected upstream. Returns {kind: csv_path}.
+    must have already been rejected upstream. Returns {kind: csv_path} including
+    a 'combined' entry when multiple kinds exist.
+
+    Export is NON-EMBEDDED: asset files (mp4/jpg/svg/eps) are NEVER modified.
+    Metadata lives only in CSV(s) — upload assets + CSV(s) together to Adobe Stock.
 
     Before generating, assets WITHOUT a user description are auto-described by
     the vision model (it looks at the actual content), so titles/keywords match
@@ -336,9 +391,16 @@ def build_per_kind_csvs(cfg, registry, batch_dir: Path) -> dict[str, Path]:
     by_kind: dict[str, list] = {}
     for a in registry.sellable():
         by_kind.setdefault(a.kind, []).append(a)
+    all_rows: list[dict] = []
     for kind, items in by_kind.items():
         rows = [gen_for_asset(cfg, a) for a in items]
         out = batch_dir / f"metadata_{kind}.csv"
         write_csv(rows, out)
         written[kind] = out
+        all_rows.extend(rows)
+    # combined CSV when multiple kinds — single upload convenience
+    if len(by_kind) > 1 and all_rows:
+        combined = batch_dir / "metadata.csv"
+        write_combined_csv(all_rows, combined)
+        written["combined"] = combined
     return written

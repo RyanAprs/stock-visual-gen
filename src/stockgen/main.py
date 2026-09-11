@@ -120,7 +120,11 @@ def cmd_metadata(args) -> int:
         console.print(f"[bold]metadata[/] ({provider}) for {len(sel.assets)} assets in {batch.name}")
         written = meta_mod.build_per_kind_csvs(cfg, sel, batch)
         for kind, path in written.items():
-            console.print(f"  [green]✓ {kind}[/] → {path.name} ({len(sel.of_kind(kind))} rows)")
+            if kind == "combined":
+                n = len(sel.assets)
+            else:
+                n = len(sel.of_kind(kind))
+            console.print(f"  [green]✓ {kind}[/] → {path.name} ({n} rows)")
         _write_upload_checklist(batch, reg)  # checklist always from FULL registry
         console.print(f"\n[green]✓ CSV(s) + upload_checklist.txt[/] in {batch}")
         return 0
@@ -375,6 +379,98 @@ def cmd_ingest(args) -> int:
                       "COMMERCIAL rights (paid plan). Free/trial output is NOT sellable.")
         console.print("[dim]Metadata will strip generator names; tick 'generative AI' at upload.[/]")
     console.print(f"[dim]Next: stockgen metadata --batch {batch.name} --kind video[/]")
+    return 0
+
+
+def cmd_import_batch(args) -> int:
+    """Batch import puluhan aset sekaligus dari folder — image+video+vector mix.
+
+    Auto-detects kind by extension (or forces --kind), processes each file
+    through the correct pipeline (image->4K, video->native, raster->vector),
+    registers in registry, and auto-generates 30-50 keyword CSV(s).
+    Metadata tidak tertanam — file asli aman, CSV terpisah untuk upload massal.
+    """
+    cfg = Config.load(args.config)
+    src = Path(args.path).expanduser()
+    if not src.exists():
+        console.print(f"[red]path not found: {src}[/]"); return 2
+    if not src.is_dir():
+        console.print("[red]import needs a folder (use: stockgen import ./my_assets/)[/]"); return 2
+    try:
+        upscale_mod._assert_source_ok(args.source)
+    except assets_mod.GuardrailError as e:
+        console.print(f"[red]✗ {e}[/]"); return 1
+    exts = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".mp4", ".mov", ".m4v", ".webm"}
+    files = sorted([p for p in src.iterdir() if p.is_file() and p.suffix.lower() in exts])
+    if not files:
+        console.print(f"[yellow]no images/videos found in {src}[/] (looking for {sorted(exts)})"); return 0
+    if len(files) > 100:
+        console.print(f"[yellow]found {len(files)} files — limiting to first 100[/]")
+        files = files[:100]
+    batch = _batch_dir(cfg, args.batch)
+    console.print(f"[bold]batch import[/] {len(files)} files → {batch.name}  (source={args.source}, kind={args.kind})")
+    results_ok, results_fail = 0, 0
+    for f in files:
+        kind = args.kind
+        if kind == "auto":
+            ext = f.suffix.lower()
+            if ext in (".mp4", ".mov", ".m4v", ".webm"):
+                kind = assets_mod.KIND_VIDEO
+            elif ext == ".svg":
+                kind = assets_mod.KIND_VECTOR
+            elif args.kind == "vector":  # shouldn't happen in auto
+                kind = assets_mod.KIND_VECTOR
+            else:
+                kind = assets_mod.KIND_IMAGE
+            # image input with kind=vector request -> vectorize
+            if ext in (".png", ".jpg", ".jpeg", ".webp") and args.kind == "vector":
+                kind = assets_mod.KIND_VECTOR
+        desc = meta_mod.desc_from_filename(f.name)
+        is_ai = args.source in assets_mod.AI_SOURCES
+        try:
+            reg = assets_mod.Registry.load(batch)
+            idx = len(reg.of_kind(kind)) + 1
+            if kind == assets_mod.KIND_VIDEO:
+                dest = batch / "video" / f"vid_{idx:03d}_native.mp4"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                info = upscale_mod.prepare_native_video(f, dest)
+                reg.add(assets_mod.Asset(
+                    file=f"video/{dest.name}", kind=kind, source=args.source,
+                    is_ai=is_ai, sketch="import", seed=idx, desc=desc))
+                reg.save()
+                console.print(f"  [green]✓[/] {f.name} → video/{dest.name}  [video native {info['to']}]  desc={desc!r}")
+            elif kind == assets_mod.KIND_VECTOR:
+                info = vectorize_mod.vectorize(f, batch / "vector", idx, args.source, engine=args.engine)
+                reg2 = assets_mod.Registry.load(batch)
+                reg2.add(assets_mod.Asset(
+                    file=f"vector/{info['file']}", kind=kind, source=args.source,
+                    sketch="import", seed=idx, desc=desc))
+                reg2.save()
+                console.print(f"  [green]✓[/] {f.name} → vector/{info['file']}  [traced {info['engine']}]  desc={desc!r}")
+            else:  # image -> upscale to 4K
+                dest = batch / "image" / f"img_{idx:03d}.jpg"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                info = upscale_mod.upscale_image(f, dest, "4k")
+                reg.add(assets_mod.Asset(
+                    file=f"image/{dest.name}", kind=kind, source=args.source,
+                    is_ai=is_ai, sketch="import", seed=idx, desc=desc))
+                reg.save()
+                console.print(f"  [green]✓[/] {f.name} → image/{dest.name}  [{info['from']}→{info['to']} {info.get('engine','')}]  desc={desc!r}")
+            results_ok += 1
+        except Exception as e:
+            console.print(f"  [red]✗ {f.name}: {e}[/]")
+            results_fail += 1
+    console.print(f"\n[green]✓ {results_ok} berhasil[/], [yellow]{results_fail} gagal[/] → {batch}")
+    if results_ok:
+        console.print("[dim]Generating Smart AI Vision descs + 30-50 SEO keywords + CSV...[/]")
+        reg = assets_mod.Registry.load(batch)
+        written = meta_mod.build_per_kind_csvs(cfg, reg, batch)
+        _write_upload_checklist(batch, reg)
+        for kind, path in written.items():
+            rows = path.read_text().strip().split("\n")
+            console.print(f"  [green]✓ {kind}[/] → {path.name} ({len(rows)-1} rows, 30-50 keywords each)")
+        console.print(f"[dim]Metadata tidak tertanam — file asli aman. Upload batch + CSV ke Adobe Stock.[/]")
+        console.print(f"[dim]Batch: {batch} — jangan rename file di dalam batch![/]")
     return 0
 
 
@@ -637,6 +733,19 @@ def main(argv=None) -> int:
                      help="IP source tag (default: ai_googleflow)")
     ing.add_argument("--batch", default=None, help="batch dir name (default: timestamp)")
     ing.set_defaults(func=cmd_ingest)
+
+    # Batch import: puluhan aset sekaligus (image+video+vector mix) from a folder
+    bp = sub.add_parser("import", help="batch import puluhan aset sekaligus dari folder (image+video)")
+    bp.add_argument("path", help="folder containing images/videos to batch-process")
+    bp.add_argument("--source", default=assets_mod.SOURCE_ORIGINAL,
+                    choices=sorted(assets_mod.SELLABLE_SOURCES),
+                    help="IP source tag (default: original)")
+    bp.add_argument("--kind", default="auto", choices=["auto", "image", "video", "vector"],
+                    help="force kind for all files, or auto-detect by extension (default: auto)")
+    bp.add_argument("--engine", default="vtracer", choices=list(vectorize_mod.ENGINES),
+                    help="vectorize engine when kind=vector (default: vtracer)")
+    bp.add_argument("--batch", default=None, help="batch dir name (default: timestamp)")
+    bp.set_defaults(func=cmd_import_batch)
 
     ups = sub.add_parser("upscale", help="upscale a video/image to 4K (original/ai only)")
     ups.add_argument("path", help="video or image file to upscale")

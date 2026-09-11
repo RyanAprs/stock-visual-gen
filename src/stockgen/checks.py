@@ -64,4 +64,26 @@ def doctor(cfg) -> list[tuple[str, bool, str]]:
     else:
         check("metadata", True, f"provider={prov}")
 
+    # Smart AI Vision: check vision model
+    vmodel = cfg.get("metadata.vision_model", "moondream")
+    auto_desc = cfg.get("metadata.auto_describe", True)
+    if auto_desc:
+        host = cfg.get("metadata.ollama_host", "http://localhost:11434")
+        try:
+            r = requests.get(f"{host}/api/tags", timeout=5)
+            models = [m["name"] for m in r.json().get("models", [])]
+            v_has = any(vmodel.split(":")[0] in m for m in models)
+            check("vision", v_has, f"{vmodel} " + ("ready — deep visual reading" if v_has else f"NOT pulled (ollama pull {vmodel})"))
+        except Exception:
+            check("vision", False, f"not reachable at {host} (for auto-describe)")
+    else:
+        check("vision", True, "auto_describe=off (manual desc only)")
+
+    # SEO keyword config
+    kw = cfg.get("metadata.keywords_count", 42)
+    check("seo", 30 <= kw <= 49, f"{kw} keywords/asset (target 30-50) — {'✓ in range' if 30 <= kw <= 49 else '⚠ out of 30-50 range'}")
+
+    # CSV export mode
+    check("csv", True, "metadata tidak tertanam — file asli aman, CSV terpisah untuk upload massal")
+
     return rows
