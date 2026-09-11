@@ -17,6 +17,7 @@ from . import vector as vector_mod
 from . import image as image_mod
 from . import ingest as ingest_mod
 from . import upscale as upscale_mod
+from . import vectorize as vectorize_mod
 
 console = Console()
 
@@ -280,6 +281,37 @@ def cmd_assets(args) -> int:
     return 0
 
 
+def cmd_vectorize(args) -> int:
+    """Trace an ORIGINAL raster -> SVG+EPS+preview. GUARDRAIL: original/ai only."""
+    cfg = Config.load(args.config)
+    src = Path(args.path).expanduser()
+    if not src.exists():
+        console.print(f"[red]path not found: {src}[/]"); return 2
+    try:
+        vectorize_mod._assert_source_ok(args.source)
+    except assets_mod.GuardrailError as e:
+        console.print(f"[red]✗ {e}[/]"); return 1
+    batch = _batch_dir(cfg, args.batch)
+    vec_dir = batch / "vector"
+    reg = assets_mod.Registry.load(batch)
+    idx = len(reg.of_kind(assets_mod.KIND_VECTOR))
+    idx += 1
+    console.print(f"[cyan]▶ vectorize[/] {src.name} ({args.engine}) → trace_{idx:03d}")
+    try:
+        info = vectorize_mod.vectorize(src, vec_dir, idx, args.source,
+                                       engine=args.engine, colors=args.colors)
+    except Exception as e:
+        console.print(f"[red]✗ {e}[/]"); return 3
+    reg.add(assets_mod.Asset(
+        file=f"vector/{info['file']}", kind=assets_mod.KIND_VECTOR,
+        source=args.source, sketch="icons", seed=idx,
+    ))
+    reg.save()
+    console.print(f"  [green]✓[/] {info['file']} + .svg + preview.jpg  ({info['engine']})")
+    console.print(f"[dim]Next: stockgen metadata --batch {batch.name} --kind vector[/]")
+    return 0
+
+
 def cmd_upscale(args) -> int:
     """Upscale a video/image to 4K. GUARDRAIL: original/ai sources only."""
     cfg = Config.load(args.config)
@@ -468,6 +500,16 @@ def main(argv=None) -> int:
                      help="target size (default 4k)")
     ups.add_argument("--out", default=None, help="output path (default: <stem>_4k.<ext>)")
     ups.set_defaults(func=cmd_upscale)
+
+    vz = sub.add_parser("vectorize", help="trace an ORIGINAL raster to SVG+EPS (original/ai only)")
+    vz.add_argument("path", help="raster image (png/jpg/webp) to trace")
+    vz.add_argument("--source", required=True, choices=sorted(assets_mod.KNOWN_SOURCES),
+                    help="IP source of the raster (download is refused)")
+    vz.add_argument("--engine", default="vtracer", choices=list(vectorize_mod.ENGINES),
+                    help="vtracer (color) | potrace (mono)")
+    vz.add_argument("--colors", type=int, default=8, help="vtracer color precision 1-8")
+    vz.add_argument("--batch", default=None, help="batch dir name (default: timestamp)")
+    vz.set_defaults(func=cmd_vectorize)
 
     args = p.parse_args(argv)
     return args.func(args)

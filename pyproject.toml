@@ -9,6 +9,7 @@ dependencies = [
     "requests>=2.31",
     "python-dotenv>=1.0",
     "cairosvg>=2.7",
+    "vtracer>=0.6",
 ]
 
 [project.scripts]
