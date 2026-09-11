@@ -285,7 +285,8 @@ def cmd_assets(args) -> int:
 
 def cmd_ui(args) -> int:
     """Launch the local web UI (drag&drop + before/after preview)."""
-    return ui_mod.serve(port=args.port, open_browser=not args.no_browser)
+    return ui_mod.serve(port=args.port, open_browser=not args.no_browser,
+                        batch=getattr(args, "batch", None))
 
 
 def cmd_vectorize(args) -> int:
@@ -492,6 +493,7 @@ def cmd_menu(args) -> int:
                 cmd_doctor(ns)
             elif sel == "ui":
                 ns.port = 8765; ns.no_browser = False
+                ns.batch = _menu_prompt("resume batch (path/name, blank=new):") or None
                 cmd_ui(ns)
             elif sel == "assets":
                 ns.batch = _menu_prompt("batch name (blank=newest):") or None
@@ -657,6 +659,8 @@ def main(argv=None) -> int:
     ui = sub.add_parser("ui", help="launch local web UI (drag&drop + before/after preview)")
     ui.add_argument("--port", type=int, default=8765)
     ui.add_argument("--no-browser", action="store_true", help="don't auto-open the browser")
+    ui.add_argument("--batch", default=None,
+                    help="resume an existing batch (path or bare name under output/); default: new batch")
     ui.set_defaults(func=cmd_ui)
 
     args = p.parse_args(argv)

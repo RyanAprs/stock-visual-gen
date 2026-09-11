@@ -205,6 +205,10 @@ def gen_for_clip(cfg, clip: dict) -> dict:
                                            "animation", "footage", "screensaver", "vj"}]
         # strip motion-loop phrasing from titles of still assets
         title = re.sub(r"\s*—\s*seamless 4K loop", "", title, flags=re.I).strip()
+        # scrub motion words embedded mid-title (still/vector are static)
+        _kill = r"\b(seamless|motion|animated|animation|looping|loop|footage|4k|uhd)\b"
+        title = re.sub(_kill, "", title, flags=re.I)
+        title = re.sub(r"\s{2,}", " ", title).strip(" -—,")
     if kv_title and kind == "vector" and "vector" not in title.lower():
         title = f"{title} — {kv_title[0]}"
     kws = kws[:n]
