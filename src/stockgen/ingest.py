@@ -20,7 +20,9 @@ from pathlib import Path
 
 from . import assets as assets_mod
 
-MIN_MEGAPIXELS = 4.0
+# Adobe Stock accepts video from 720p (0.9MP) up to 4K (8.3MP); 1080p (2.1MP) is standard.
+# (4.0MP floor is for images/stills only).
+MIN_MEGAPIXELS = 0.9
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
 
 

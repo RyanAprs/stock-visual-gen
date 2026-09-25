@@ -45,7 +45,15 @@ PALETTES = {
     4: ["#6b1b1b", "#b02f2f", "#e65a5a", "#f2a7a7"],   # red/ember
 }
 
-VECTOR_STYLES = ["icons", "burst", "waves", "mosaic", "orbit"]
+XMAS_PALETTES = {
+    0: ["#0b1f14", "#165b33", "#bb2528", "#f8b229", "#ffffff"],  # forest, pine, ruby, gold, snow
+    1: ["#150c1b", "#1a4d36", "#c72626", "#ffd166", "#f4f8fb"],  # deep night, pine, red berry, gold, ice
+    2: ["#09182b", "#1e3f66", "#d9383a", "#fbb03b", "#eef7ff"],  # winter navy, pine, crimson, star, frost
+    3: ["#142416", "#216835", "#b91c1c", "#fbbf24", "#fef3c7"],  # evergreen, wreath red, gold glow, ivory
+    4: ["#121820", "#15803d", "#dc2626", "#f59e0b", "#fafafa"],  # dark slate, holly, bright red, amber, white
+}
+
+VECTOR_STYLES = ["icons", "burst", "waves", "mosaic", "orbit", "xmas"]
 
 
 def _hex(rgb):
@@ -145,9 +153,194 @@ def _gen_icons(rnd, w, h, pal):
     return "".join(parts)
 
 
+def _star_points(cx: float, cy: float, r_out: float, r_in: float, points: int = 5) -> str:
+    pts = []
+    step = math.pi / points
+    for i in range(2 * points):
+        r = r_out if i % 2 == 0 else r_in
+        angle = i * step - math.pi / 2
+        pts.append(f"{cx + r * math.cos(angle):.1f},{cy + r * math.sin(angle):.1f}")
+    return " ".join(pts)
+
+
+def _gen_xmas_tree(rnd: random.Random, w: int, h: int, pal: list[str]) -> str:
+    parts = []
+    cx = w / 2
+    # Background festive snow dots
+    for _ in range(rnd.randint(35, 60)):
+        sx = rnd.uniform(w * 0.05, w * 0.95)
+        sy = rnd.uniform(h * 0.05, h * 0.95)
+        sr = rnd.uniform(2.0, 5.5)
+        op = rnd.uniform(0.3, 0.85)
+        parts.append(f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="{sr:.1f}" fill="{pal[4]}" opacity="{op:.2f}"/>')
+
+    # Tree trunk
+    tw = w * 0.10
+    th = h * 0.16
+    ty = h * 0.76
+    parts.append(f'<rect x="{cx - tw/2:.1f}" y="{ty:.1f}" width="{tw:.1f}" height="{th:.1f}" rx="6" fill="#4a2e18"/>')
+
+    # 4 Tiered Pine Layers (bottom to top)
+    tiers = [
+        (h * 0.55, h * 0.78, w * 0.38),
+        (h * 0.42, h * 0.64, w * 0.31),
+        (h * 0.30, h * 0.50, w * 0.23),
+        (h * 0.18, h * 0.36, w * 0.15),
+    ]
+    pine_color = pal[1]
+    for i, (yp, yb, hw) in enumerate(tiers):
+        pts = f"{cx},{yp:.1f} {cx+hw:.1f},{yb:.1f} {cx-hw:.1f},{yb:.1f}"
+        parts.append(f'<polygon points="{pts}" fill="{pine_color}"/>')
+        # snow trim on bottom edge of tier
+        trim_h = h * 0.025
+        snow_pts = f"{cx-hw:.1f},{yb:.1f} {cx+hw:.1f},{yb:.1f} {cx+hw*0.9:.1f},{yb+trim_h:.1f} {cx-hw*0.9:.1f},{yb+trim_h:.1f}"
+        parts.append(f'<polygon points="{snow_pts}" fill="{pal[4]}" opacity="0.95"/>')
+
+    # Bauble ornaments hanging on tree
+    bauble_colors = [pal[2], pal[3], pal[4]]
+    for yp, yb, hw in tiers:
+        num_b = rnd.randint(3, 5)
+        for _ in range(num_b):
+            bx = cx + rnd.uniform(-hw * 0.75, hw * 0.75)
+            by = rnd.uniform(yp + (yb - yp) * 0.3, yb - h * 0.01)
+            br = rnd.uniform(w * 0.018, w * 0.032)
+            bcol = rnd.choice(bauble_colors)
+            parts.append(f'<circle cx="{bx:.1f}" cy="{by:.1f}" r="{br:.1f}" fill="{bcol}"/>')
+            parts.append(f'<circle cx="{bx-br*0.3:.1f}" cy="{by-br*0.3:.1f}" r="{br*0.35:.1f}" fill="#ffffff" opacity="0.65"/>')
+
+    # Star topper on the top peak
+    star_y = tiers[-1][0]
+    star_pts = _star_points(cx, star_y, w * 0.07, w * 0.028, points=5)
+    parts.append(f'<polygon points="{star_pts}" fill="{pal[3]}"/>')
+    parts.append(f'<circle cx="{cx}" cy="{star_y}" r="{w*0.015:.1f}" fill="#ffffff" opacity="0.8"/>')
+    return "".join(parts)
+
+
+def _gen_xmas_snowflake(rnd: random.Random, w: int, h: int, pal: list[str]) -> str:
+    cx, cy = w / 2, h / 2
+    r_max = min(w, h) * 0.38
+    parts = []
+
+    parts.append(f'<circle cx="{cx}" cy="{cy}" r="{r_max * 1.05:.1f}" fill="none" stroke="{pal[3]}" stroke-width="2" opacity="0.25"/>')
+    parts.append(f'<circle cx="{cx}" cy="{cy}" r="{r_max * 0.55:.1f}" fill="none" stroke="{pal[4]}" stroke-width="3" opacity="0.4"/>')
+
+    arm_parts = []
+    arm_parts.append(f'<line x1="0" y1="0" x2="0" y2="{-r_max:.1f}" stroke="{pal[4]}" stroke-width="{w*0.018:.1f}" stroke-linecap="round"/>')
+
+    branch_specs = [
+        (0.40, w * 0.11, 40),
+        (0.65, w * 0.08, 45),
+        (0.85, w * 0.05, 50),
+    ]
+    for pos_pct, blen, ang_deg in branch_specs:
+        by = -r_max * pos_pct
+        ang = math.radians(ang_deg)
+        dx = blen * math.sin(ang)
+        dy = blen * math.cos(ang)
+        arm_parts.append(f'<line x1="0" y1="{by:.1f}" x2="{-dx:.1f}" y2="{by-dy:.1f}" stroke="{pal[4]}" stroke-width="{w*0.013:.1f}" stroke-linecap="round"/>')
+        arm_parts.append(f'<line x1="0" y1="{by:.1f}" x2="{dx:.1f}" y2="{by-dy:.1f}" stroke="{pal[4]}" stroke-width="{w*0.013:.1f}" stroke-linecap="round"/>')
+        arm_parts.append(f'<circle cx="{-dx:.1f}" cy="{by-dy:.1f}" r="{w*0.008:.1f}" fill="{pal[3]}"/>')
+        arm_parts.append(f'<circle cx="{dx:.1f}" cy="{by-dy:.1f}" r="{w*0.008:.1f}" fill="{pal[3]}"/>')
+
+    tip_y = -r_max
+    tip_d = w * 0.025
+    tip_pts = f"0,{tip_y-tip_d:.1f} {tip_d*0.7:.1f},{tip_y:.1f} 0,{tip_y+tip_d:.1f} {-tip_d*0.7:.1f},{tip_y:.1f}"
+    arm_parts.append(f'<polygon points="{tip_pts}" fill="{pal[3]}"/>')
+
+    arm_svg = "".join(arm_parts)
+    for i in range(6):
+        deg = i * 60
+        parts.append(f'<g transform="translate({cx},{cy}) rotate({deg})">{arm_svg}</g>')
+
+    hex_pts = []
+    r_hex = r_max * 0.22
+    for i in range(6):
+        a = i * math.pi / 3
+        hex_pts.append(f"{cx + r_hex*math.cos(a):.1f},{cy + r_hex*math.sin(a):.1f}")
+    parts.append(f'<polygon points="{" ".join(hex_pts)}" fill="none" stroke="{pal[3]}" stroke-width="{w*0.012:.1f}"/>')
+
+    center_star = _star_points(cx, cy, r_max * 0.16, r_max * 0.08, points=6)
+    parts.append(f'<polygon points="{center_star}" fill="{pal[4]}"/>')
+    parts.append(f'<circle cx="{cx}" cy="{cy}" r="{r_max*0.05:.1f}" fill="{pal[3]}"/>')
+
+    for _ in range(24):
+        fx = cx + rnd.uniform(-w*0.44, w*0.44)
+        fy = cy + rnd.uniform(-h*0.44, h*0.44)
+        if math.hypot(fx - cx, fy - cy) > r_max * 0.4:
+            fr = rnd.uniform(2.5, 6.0)
+            parts.append(f'<circle cx="{fx:.1f}" cy="{fy:.1f}" r="{fr:.1f}" fill="{pal[4]}" opacity="{rnd.uniform(0.3, 0.8):.2f}"/>')
+
+    return "".join(parts)
+
+
+def _gen_xmas_bauble(rnd: random.Random, w: int, h: int, pal: list[str]) -> str:
+    cx = w / 2
+    cy = h * 0.54
+    r_sphere = min(w, h) * 0.32
+    parts = []
+
+    cap_top = cy - r_sphere - h * 0.05
+    parts.append(f'<line x1="{cx}" y1="0" x2="{cx}" y2="{cap_top:.1f}" stroke="{pal[3]}" stroke-width="4"/>')
+    ring_r = h * 0.025
+    parts.append(f'<circle cx="{cx}" cy="{cap_top:.1f}" r="{ring_r:.1f}" fill="none" stroke="{pal[3]}" stroke-width="5"/>')
+
+    cap_w = r_sphere * 0.38
+    cap_h = h * 0.04
+    parts.append(f'<rect x="{cx - cap_w/2:.1f}" y="{cy - r_sphere - cap_h*0.8:.1f}" width="{cap_w:.1f}" height="{cap_h:.1f}" rx="4" fill="{pal[3]}"/>')
+
+    base_color = pal[2]
+    parts.append(f'<circle cx="{cx}" cy="{cy}" r="{r_sphere:.1f}" fill="{base_color}"/>')
+
+    steps = 14
+    step_w = (r_sphere * 1.7) / steps
+    start_x = cx - (r_sphere * 1.7) / 2
+    zz_pts = []
+    for i in range(steps + 1):
+        zx = start_x + i * step_w
+        zy = cy + ((-1) ** i) * (r_sphere * 0.12)
+        zz_pts.append(f"{zx:.1f},{zy:.1f}")
+    parts.append(f'<polyline points="{" ".join(zz_pts)}" fill="none" stroke="{pal[3]}" stroke-width="{w*0.015:.1f}" stroke-linecap="round" stroke-linejoin="round"/>')
+
+    parts.append(f'<line x1="{cx - r_sphere*0.8:.1f}" y1="{cy - r_sphere*0.28:.1f}" x2="{cx + r_sphere*0.8:.1f}" y2="{cy - r_sphere*0.28:.1f}" stroke="{pal[4]}" stroke-width="{w*0.01:.1f}" stroke-linecap="round"/>')
+    parts.append(f'<line x1="{cx - r_sphere*0.8:.1f}" y1="{cy + r_sphere*0.28:.1f}" x2="{cx + r_sphere*0.8:.1f}" y2="{cy + r_sphere*0.28:.1f}" stroke="{pal[4]}" stroke-width="{w*0.01:.1f}" stroke-linecap="round"/>')
+
+    cstar_pts = _star_points(cx, cy, r_sphere * 0.22, r_sphere * 0.09, points=8)
+    parts.append(f'<polygon points="{cstar_pts}" fill="{pal[3]}"/>')
+    parts.append(f'<circle cx="{cx}" cy="{cy}" r="{r_sphere*0.06:.1f}" fill="{pal[4]}"/>')
+
+    for k in range(-3, 4):
+        parts.append(f'<circle cx="{cx + k * r_sphere*0.22:.1f}" cy="{cy - r_sphere*0.42:.1f}" r="{w*0.014:.1f}" fill="{pal[3]}"/>')
+        parts.append(f'<circle cx="{cx + k * r_sphere*0.22:.1f}" cy="{cy + r_sphere*0.42:.1f}" r="{w*0.014:.1f}" fill="{pal[4]}"/>')
+
+    gl_x = cx - r_sphere * 0.22
+    gl_y = cy - r_sphere * 0.22
+    parts.append(f'<ellipse cx="{gl_x:.1f}" cy="{gl_y:.1f}" rx="{r_sphere*0.25:.1f}" ry="{r_sphere*0.14:.1f}" transform="rotate(-35 {gl_x:.1f} {gl_y:.1f})" fill="#ffffff" opacity="0.32"/>')
+
+    for _ in range(18):
+        bx = rnd.uniform(w * 0.08, w * 0.92)
+        by = rnd.uniform(h * 0.1, h * 0.9)
+        if math.hypot(bx - cx, by - cy) > r_sphere * 1.05:
+            br = rnd.uniform(w * 0.02, w * 0.07)
+            bcol = rnd.choice([pal[3], pal[4], pal[1]])
+            parts.append(f'<circle cx="{bx:.1f}" cy="{by:.1f}" r="{br:.1f}" fill="{bcol}" opacity="{rnd.uniform(0.15, 0.4):.2f}"/>')
+
+    return "".join(parts)
+
+
+def _gen_xmas(rnd: random.Random, w: int, h: int, pal: list[str]) -> str:
+    """Parametric Christmas holiday vector: tree, snowflake, or festive bauble."""
+    motif = rnd.choice(["tree", "snowflake", "bauble"])
+    if motif == "tree":
+        return _gen_xmas_tree(rnd, w, h, pal)
+    elif motif == "snowflake":
+        return _gen_xmas_snowflake(rnd, w, h, pal)
+    else:
+        return _gen_xmas_bauble(rnd, w, h, pal)
+
+
 _GENERATORS = {
     "icons": _gen_icons, "burst": _gen_burst, "waves": _gen_waves,
-    "mosaic": _gen_mosaic, "orbit": _gen_orbit,
+    "mosaic": _gen_mosaic, "orbit": _gen_orbit, "xmas": _gen_xmas,
 }
 
 
@@ -156,7 +349,10 @@ def build_svg(style: str, seed: int, w: int = 2000, h: int = 2000) -> str:
     if style not in _GENERATORS:
         raise ValueError(f"unknown vector style {style!r} (allowed: {VECTOR_STYLES})")
     rnd = random.Random(seed)
-    pal = PALETTES[seed % 5]
+    if style == "xmas":
+        pal = XMAS_PALETTES[seed % len(XMAS_PALETTES)]
+    else:
+        pal = PALETTES[seed % 5]
     bg = pal[0]
     body = _GENERATORS[style](rnd, w, h, pal)
     return _svg_header(w, h, bg) + body + "</svg>"

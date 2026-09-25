@@ -102,6 +102,10 @@ SKETCH_DESC = {
     "orbit":     ("concentric orbit ring geometric design",
                   ["orbit", "rings", "concentric", "circles", "geometric", "abstract",
                    "target", "modern", "minimal", "design", "shape", "decorative"]),
+    "xmas":      ("flat geometric Christmas holiday celebration design",
+                  ["christmas", "holiday", "xmas", "winter", "celebration", "festive",
+                   "season", "snowflake", "tree", "ornament", "decoration", "merry",
+                   "december", "greeting", "pine", "snow"]),
 }
 
 PALETTE_WORDS = {

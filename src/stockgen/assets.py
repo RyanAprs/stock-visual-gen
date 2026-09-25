@@ -14,6 +14,7 @@ source values:
 Any asset whose source is not in SELLABLE_SOURCES (or is missing) is refused.
 """
 from __future__ import annotations
+import hashlib
 import json
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
@@ -58,6 +59,7 @@ class Asset:
     height: int | None = None
     aspect: str | None = None
     tags: list[str] = field(default_factory=list)
+    file_hash: str | None = None    # sha256 hex digest of file content (anti-rename resilience)
     added_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
     def __post_init__(self):
@@ -92,6 +94,15 @@ def assert_sellable(asset: Asset) -> None:
         )
 
 
+def compute_hash(path: Path) -> str:
+    """Compute sha256 hex digest of file."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 # --- registry persistence ----------------------------------------------------
 
 class Registry:
@@ -108,7 +119,9 @@ class Registry:
         if path.exists():
             for raw in json.loads(path.read_text()):
                 assets.append(Asset(**raw))
-        return cls(path, assets)
+        reg = cls(path, assets)
+        reg.relink(batch_dir)
+        return reg
 
     def save(self) -> Path:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,8 +132,77 @@ class Registry:
         """Add an asset. With enforce=True (default) a non-sellable source raises."""
         if enforce:
             assert_sellable(asset)
+        if not asset.file_hash:
+            p = self.path.parent / asset.file
+            if p.exists() and p.is_file():
+                try:
+                    asset.file_hash = compute_hash(p)
+                except Exception:
+                    pass
         self.assets.append(asset)
         return asset
+
+    def relink(self, batch_dir: Path | None = None) -> list[tuple[str, str]]:
+        """Check for missing asset files and relink them by content hash if renamed.
+
+        Returns list of (old_file, new_file) relinked tuples.
+        """
+        bdir = batch_dir or self.path.parent
+        relinked: list[tuple[str, str]] = []
+        dirty = False
+
+        # 1. Backfill hashes for existing files
+        for a in self.assets:
+            p = bdir / a.file
+            if p.exists() and p.is_file() and not a.file_hash:
+                try:
+                    a.file_hash = compute_hash(p)
+                    dirty = True
+                except Exception:
+                    pass
+
+        # 2. Find missing assets
+        missing = [a for a in self.assets if not (bdir / a.file).exists()]
+        if not missing:
+            if dirty:
+                self.save()
+            return relinked
+
+        # Known existing paths already claimed
+        claimed_paths = {(bdir / a.file).resolve() for a in self.assets if (bdir / a.file).exists()}
+
+        # Scan batch directory for candidate files
+        candidate_files = []
+        for p in bdir.rglob("*"):
+            if p.is_file() and not p.name.startswith(".") and p.name not in (REGISTRY_NAME, "upload_checklist.txt") and p.suffix.lower() != ".csv":
+                if "_vision" not in p.parts and p.resolve() not in claimed_paths:
+                    candidate_files.append(p)
+
+        if not candidate_files:
+            if dirty:
+                self.save()
+            return relinked
+
+        candidate_hashes = {}
+        for cf in candidate_files:
+            try:
+                candidate_hashes[compute_hash(cf)] = cf
+            except Exception:
+                pass
+
+        for a in missing:
+            if a.file_hash and a.file_hash in candidate_hashes:
+                new_path = candidate_hashes[a.file_hash]
+                rel = str(new_path.relative_to(bdir))
+                old_file = a.file
+                a.file = rel
+                relinked.append((old_file, rel))
+                dirty = True
+                del candidate_hashes[a.file_hash]
+
+        if dirty:
+            self.save()
+        return relinked
 
     def of_kind(self, kind: str) -> list[Asset]:
         return [a for a in self.assets if a.kind == kind]

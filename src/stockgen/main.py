@@ -1,6 +1,7 @@
 """stockgen CLI — render original clips + Adobe Stock CSV metadata."""
 from __future__ import annotations
 import argparse
+import csv
 import sys
 import json
 from datetime import datetime
@@ -14,6 +15,7 @@ from . import checks as checks_mod
 from . import render as render_mod
 from . import metadata as meta_mod
 from . import assets as assets_mod
+from . import qc as qc_mod
 from . import vector as vector_mod
 from . import image as image_mod
 from . import ingest as ingest_mod
@@ -125,6 +127,16 @@ def cmd_metadata(args) -> int:
             else:
                 n = len(sel.of_kind(kind))
             console.print(f"  [green]✓ {kind}[/] → {path.name} ({n} rows)")
+        # QC pass on the generated rows before we bless the batch
+        all_rows = [r for kind, p in written.items() for r in
+                    list(csv.reader(open(p, encoding="utf-8")))[1:]]
+        rows = [dict(zip(["Filename", "Title", "Keywords", "Category", "Releases"], r))
+                for r in all_rows]
+        report = qc_mod.qc_batch(cfg, sel, batch, rows=rows)
+        qc_mod.print_report(report)
+        if not report["ok"]:
+            console.print("[red]✗ QC FAILED — fix the issues above, re-run metadata.[/]")
+            return 4
         _write_upload_checklist(batch, reg)  # checklist always from FULL registry
         console.print(f"\n[green]✓ CSV(s) + upload_checklist.txt[/] in {batch}")
         return 0
@@ -288,6 +300,39 @@ def cmd_assets(args) -> int:
         return 1
     console.print(f"\n[green]✓ all {len(reg.assets)} assets sellable[/]")
     return 0
+
+
+def cmd_qc(args) -> int:
+    """Pre-submit Adobe Stock QC: up-res, 4MP, keywords, titles, AI brands."""
+    cfg = Config.load(args.config)
+    if args.batch:
+        batch = cfg.output_dir / args.batch
+    else:
+        batches = sorted(cfg.output_dir.glob("batch_*"), key=lambda p: p.stat().st_mtime)
+        if not batches:
+            console.print("[red]no batches found[/]"); return 2
+        batch = batches[-1]
+
+    reg = assets_mod.Registry.load(batch)
+    if not reg.assets:
+        console.print(f"[yellow]no assets registered in {batch.name}[/]"); return 0
+
+    rows = None
+    if getattr(args, "with_csv", False):
+        csv_files = list(batch.glob("metadata*.csv"))
+        if csv_files:
+            all_rows = []
+            for p in csv_files:
+                with open(p, encoding="utf-8") as f:
+                    rdr = list(csv.reader(f))
+                    if len(rdr) > 1:
+                        all_rows.extend(rdr[1:])
+            rows = [dict(zip(["Filename", "Title", "Keywords", "Category", "Releases"], r))
+                    for r in all_rows]
+
+    report = qc_mod.qc_batch(cfg, reg, batch, rows=rows)
+    passed = qc_mod.print_report(report)
+    return 0 if passed else 1
 
 
 def cmd_ui(args) -> int:
@@ -564,6 +609,7 @@ def cmd_menu(args) -> int:
         ("upscale",   "Upscale a video/image to 4K"),
         ("vectorize", "Trace an original raster to SVG+EPS"),
         ("metadata",  "Build Adobe Stock CSV(s) for a batch"),
+        ("qc",        "Pre-submit Adobe Stock QC check"),
         ("assets",    "List/validate a batch's IP-source registry"),
         ("ui",        "Launch web UI (drag&drop, before/after preview)"),
         ("doctor",    "Check environment"),
@@ -597,6 +643,10 @@ def cmd_menu(args) -> int:
             elif sel == "assets":
                 ns.batch = _menu_prompt("batch name (blank=newest):") or None
                 cmd_assets(ns)
+            elif sel == "qc":
+                ns.batch = _menu_prompt("batch name (blank=newest):") or None
+                ns.with_csv = True
+                cmd_qc(ns)
             elif sel == "metadata":
                 ns.batch = _menu_prompt("batch name (blank=newest):") or None
                 ns.kind = _menu_prompt("kind [all/video/image/vector] (blank=all):") or "all"
@@ -708,6 +758,12 @@ def main(argv=None) -> int:
     a = sub.add_parser("assets", help="list/validate the IP-source registry for a batch")
     a.add_argument("--batch", default=None, help="batch dir name (default: newest)")
     a.set_defaults(func=cmd_assets)
+
+    q = sub.add_parser("qc", help="pre-submit Adobe Stock QC: up-res, 4MP, keywords, titles, AI brands")
+    q.add_argument("--batch", default=None, help="batch dir name (default: newest)")
+    q.add_argument("--with-csv", action="store_true",
+                   help="also QC existing metadata_<kind>.csv files in the batch")
+    q.set_defaults(func=cmd_qc)
 
     vec = sub.add_parser("vector", help="generate original flat-vector assets (SVG+EPS+preview)")
     vec.add_argument("--style", default="all",

@@ -249,7 +249,14 @@ $("refresh").onclick=loadReg;
 $("gen").onclick=async()=>{$("exStatus").className="status";$("exStatus").textContent="Generating…";
   try{const j=await(await fetch("/api/metadata",{method:"POST"})).json();
     if(j.error)throw new Error(j.error);
-    $("exStatus").className="status ok";$("exStatus").textContent="Exported "+j.total+" asset(s).";
+    if(j.qc_ok){
+      let msg = "Exported "+j.total+" asset(s). QC Passed ✓";
+      if(j.qc_warns && j.qc_warns.length) msg += " (" + j.qc_warns.length + " tip/warning)";
+      $("exStatus").className="status ok";$("exStatus").textContent=msg;
+    } else {
+      $("exStatus").className="status err";
+      $("exStatus").textContent="Exported with QC Issues: " + (j.qc_errors||[]).join("; ");
+    }
     let l="";for(const [k,u] of Object.entries(j.csv))l+=`<a href="${u}" download>metadata_${k}.csv</a>`;
     if(j.checklist_url)l+=`<a href="${j.checklist_url}" download>upload_checklist.txt</a>`;
     $("exLinks").innerHTML=l;loadReg();
@@ -646,10 +653,32 @@ def _make_handler():
             # upload checklist (lazy import to avoid circular import with main)
             from .main import _write_upload_checklist
             _write_upload_checklist(_BATCH, reg)
+
+            # Pre-submit QC check
+            import csv
+            all_rows = []
+            for p in written.values():
+                try:
+                    with open(p, encoding="utf-8") as f:
+                        rdr = list(csv.reader(f))
+                        if len(rdr) > 1:
+                            all_rows.extend(rdr[1:])
+                except Exception:
+                    pass
+            rows = [dict(zip(["Filename", "Title", "Keywords", "Category", "Releases"], r))
+                    for r in all_rows]
+            from . import qc as qc_mod
+            qc_res = qc_mod.qc_batch(_CFG, reg, _BATCH, rows=rows)
+
             return {"total": len(reg.assets),
                     "csv": {k: f"/files/{p.name}" for k, p in written.items()},
                     "checklist_url": "/files/upload_checklist.txt",
-                    "descs": {a.file: (a.desc or "") for a in reg.assets}}
+                    "descs": {a.file: (a.desc or "") for a in reg.assets},
+                    "qc_ok": qc_res["ok"],
+                    "qc_errors": [f"{item['file']}: {i['msg']}" for item in qc_res["items"]
+                                  for i in item["issues"] if i["level"] == "error"],
+                    "qc_warns": [f"{item['file']}: {i['msg']}" for item in qc_res["items"]
+                                 for i in item["issues"] if i["level"] == "warn"]}
     return H
 
 
